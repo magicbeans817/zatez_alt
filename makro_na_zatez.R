@@ -1,5 +1,5 @@
 # app.R
-# install.packages(c("shiny","dplyr","ggplot2","readr","stringr","forcats","DT","shinyWidgets","digest"))
+# install.packages(c("shiny","dplyr","ggplot2","readr","stringr","forcats","DT","shinyWidgets"))
 
 library(shiny)
 library(dplyr)
@@ -9,10 +9,9 @@ library(stringr)
 library(forcats)
 library(DT)
 library(shinyWidgets)
-library(digest)
 
 # -------------------------
-# 1) LEGENDA ŠKÁL 1–5 (z tvého JS)
+# 1) LEGENDA ŠKÁL 1–5 (z JS jako pravidla)
 # -------------------------
 legend_rules <- list(
   list(
@@ -72,19 +71,13 @@ legend_rules <- list(
   )
 )
 
-legend_labels_for_question <- function(q_title) {
+legend_from_rules <- function(q_title) {
   for (r in legend_rules) {
     if (str_detect(q_title, regex(r$pattern))) {
       return(list(label_1 = r$label_1, label_5 = r$label_5))
     }
   }
   NULL
-}
-
-legend_text_for_question <- function(q_title) {
-  lab <- legend_labels_for_question(q_title)
-  if (is.null(lab)) return(NA_character_)
-  paste0("1 = ", lab$label_1, " | 5 = ", lab$label_5)
 }
 
 # -------------------------
@@ -102,7 +95,6 @@ is_good_numeric <- function(x_num, min_n = 10, min_share_parsed = 0.6) {
   TRUE
 }
 
-# škála 1..5: po vyčištění musí být subset {1,2,3,4,5} a musí obsahovat aspoň 2 různé hodnoty
 is_scale_1_5 <- function(x_num, min_n = 10) {
   x <- x_num[!is.na(x_num)]
   if (length(x) < min_n) return(FALSE)
@@ -119,6 +111,8 @@ is_open_text <- function(x_chr, min_n = 15, uniq_ratio = 0.35, median_len = 20) 
   (ur >= uniq_ratio) && (ml >= median_len)
 }
 
+invert_1_5 <- function(x_num) ifelse(is.na(x_num), NA_real_, 6 - x_num)
+
 numeric_summary <- function(x_num) {
   n_total <- length(x_num)
   n_ok <- sum(!is.na(x_num))
@@ -128,23 +122,11 @@ numeric_summary <- function(x_num) {
   list(n = n_ok, mean = mu, sd = sdv, pct_missing = pct_miss)
 }
 
-# inverze škály 1..5 (1<->5, 2<->4)
-invert_1_5 <- function(x_num) {
-  ifelse(is.na(x_num), NA_real_, 6 - x_num)
-}
-
 # -------------------------
-# 3) KATEGORIZACE (včetně duplicit se suffix číslem)
+# 3) KATEGORIZACE (suffix čísla + fix Aj otázky) + barevné štítky
 # -------------------------
 subjects_by_suffix <- c(
-  "SAK",                  # bez čísla
-  "PIV",                  # 1
-  "Matematika",           # 2
-  "Angličtina",           # 3
-  "Čeština a komunikace", # 4
-  "Druhý cizí jazyk",     # 5
-  "OSV",                  # 6
-  "Tvorba"                # 7
+  "SAK", "PIV", "Matematika", "Angličtina", "Čeština a komunikace", "Druhý cizí jazyk", "OSV", "Tvorba"
 )
 
 extract_suffix_num <- function(colname) {
@@ -153,11 +135,10 @@ extract_suffix_num <- function(colname) {
   list(base = str_trim(m[1,2]), num = as.integer(m[1,3]))
 }
 
-categorize_questions_v3 <- function(cols) {
+categorize_questions <- function(cols) {
   drop_cols <- c("Do jaké třídy chodíte?", "Časová značka", "Emailová adresa")
   cols <- setdiff(cols, drop_cols)
   
-  # explicitní fix: Aj otázka “Z hlediska průběžné práce...”
   is_aj_load <- str_detect(cols, regex("^Z hlediska průběžné práce mne více zatěžuje", ignore_case = TRUE))
   
   base_groups <- list(
@@ -165,10 +146,7 @@ categorize_questions_v3 <- function(cols) {
     "SAK" = cols[str_detect(cols, regex("\\bSAK\\b|\\bSAKu\\b", ignore_case = TRUE))],
     "PIV" = cols[str_detect(cols, regex("\\bPIV\\b|\\bPIVu\\b", ignore_case = TRUE))],
     "Matematika" = cols[str_detect(cols, regex("Matemat", ignore_case = TRUE))],
-    "Angličtina" = unique(c(
-      cols[str_detect(cols, regex("Angličt", ignore_case = TRUE))],
-      cols[is_aj_load]
-    )),
+    "Angličtina" = unique(c(cols[str_detect(cols, regex("Angličt", ignore_case = TRUE))], cols[is_aj_load])),
     "Čeština a komunikace" = cols[str_detect(cols, regex("Čeština a komunikace|Češtině a komunikaci", ignore_case = TRUE))],
     "Druhý cizí jazyk" = cols[str_detect(cols, regex("Druhý cizí jazyk|Druhém cizím jazyce", ignore_case = TRUE))],
     "OSV" = cols[str_detect(cols, regex("\\bOSV\\b", ignore_case = TRUE))],
@@ -182,9 +160,7 @@ categorize_questions_v3 <- function(cols) {
   rest_num  <- vapply(rest_info, \(z) z$num, integer(1))
   
   rest_group <- vapply(seq_along(rest), function(i) {
-    if (is.na(rest_num[i])) {
-      "SAK"
-    } else {
+    if (is.na(rest_num[i])) "SAK" else {
       idx <- rest_num[i] + 1
       if (idx >= 1 && idx <= length(subjects_by_suffix)) subjects_by_suffix[idx] else "Ostatní"
     }
@@ -196,14 +172,30 @@ categorize_questions_v3 <- function(cols) {
     if (length(to_add) > 0) groups[[g]] <- unique(c(groups[[g]], to_add))
   }
   
-  # de-dupe napříč skupinami (ponech první výskyt)
   seen <- character()
   for (nm in names(groups)) {
     groups[[nm]] <- groups[[nm]][!groups[[nm]] %in% seen]
     seen <- c(seen, groups[[nm]])
   }
   
-  groups <- groups[lengths(groups) > 0]
+  groups[lengths(groups) > 0]
+}
+
+group_badge <- c(
+  "Obecné otázky"="⬜",
+  "SAK"="🟥",
+  "PIV"="🟦",
+  "Matematika"="🟩",
+  "Angličtina"="🟨",
+  "Čeština a komunikace"="🟪",
+  "Druhý cizí jazyk"="🟧",
+  "OSV"="🟫",
+  "Tvorba"="⬛",
+  "Ostatní"="🔸"
+)
+badge_groups <- function(groups) {
+  nm <- names(groups)
+  names(groups) <- paste0(ifelse(nm %in% names(group_badge), group_badge[nm], "🔸"), " ", nm)
   groups
 }
 
@@ -225,61 +217,52 @@ ui <- fluidPage(
         "Vyber otázky (můžeš i napříč předměty):",
         choices = NULL,
         multiple = TRUE,
-        options = list(
-          `actions-box` = TRUE,
-          `live-search` = TRUE,
-          `selected-text-format` = "count > 3",
-          `count-selected-text` = "{0} vybraných",
-          `none-selected-text` = "Vyber alespoň jednu otázku"
-        )
+        options = pickerOptions(`actions-box` = TRUE, `live-search` = TRUE, `selected-text-format` = "count > 3")
       ),
       
       checkboxInput("facet_by_class", "Rozdělit grafy podle tříd (facet)", value = FALSE),
+      sliderInput("top_n", "TOP kategorií (zbytek = Other):", min = 5, max = 30, value = 10, step = 1),
       
       hr(),
       h4("Škály 1–5: volitelná inverze"),
       pickerInput(
         "invert_questions",
-        "Invertovat (1↔5) pro vybrané otázky:",
+        "Invertovat (1↔5):",
         choices = NULL,
         multiple = TRUE,
-        options = list(`actions-box` = TRUE, `live-search` = TRUE)
+        options = pickerOptions(`actions-box` = TRUE, `live-search` = TRUE)
       ),
       
       hr(),
-      h4("Korelace"),
-      sliderInput("absr_range", "|r| interval:", min = 0, max = 1, value = c(0.0, 1.0), step = 0.01),
+      h4("Korelace (výběr podle kategorií)"),
+      pickerInput(
+        "vars_corr",
+        "Proměnné pro korelace:",
+        choices = NULL,
+        multiple = TRUE,
+        options = pickerOptions(`actions-box` = TRUE, `live-search` = TRUE, style = "btn-danger")
+      ),
+      sliderInput("absr_range", "|r| interval:", min = 0, max = 1, value = c(0, 1), step = 0.01),
       fluidRow(
-        column(6, actionButton("preset_medium", "Středně silná (0.4–0.7)")),
+        column(6, actionButton("preset_medium", "Střední (0.4–0.7)")),
         column(6, actionButton("preset_strong", "Silná (>0.7)"))
       ),
       
-      h4("Výběr proměnných podle kategorií"),
-      pickerInput(
-        "vars_corr",
-        "Proměnné pro korelace (podle kategorií):",
-        choices = NULL,
-        multiple = TRUE,
-        options = list(`actions-box` = TRUE, `live-search` = TRUE)
-      ),
+      hr(),
+      h4("Statistiky (výběr podle kategorií)"),
       pickerInput(
         "vars_stats",
-        "Proměnné pro statistiky (podle kategorií):",
+        "Proměnné pro statistiky:",
         choices = NULL,
         multiple = TRUE,
-        options = list(`actions-box` = TRUE, `live-search` = TRUE)
-      ),
-      
-      
-      
-      hr(),
-      helpText("Histogramy/boxploty jsou porovnatelné na první pohled. Korelace: filtruje se podle |r| a regrese jde z kliknutí na pár.")
+        options = pickerOptions(`actions-box` = TRUE, `live-search` = TRUE, style = "btn-info")
+      )
     ),
     
     mainPanel(
       tabsetPanel(
-        tabPanel("Histogramy (mřížka)", plotOutput("hist_grid", height = "750px")),
-        tabPanel("Boxploty (1 graf)", plotOutput("box_all", height = "750px")),
+        tabPanel("Histogramy (mřížka)", uiOutput("hist_grid_ui")),
+        tabPanel("Boxploty (1 graf)", uiOutput("box_all_ui")),
         tabPanel("Korelace & regrese",
                  h4("Tabulka párů (filtrovaná podle |r|)"),
                  DTOutput("pairs_dt"),
@@ -297,7 +280,10 @@ ui <- fluidPage(
                  verbatimTextOutput("reg_summary")
         ),
         tabPanel("Přehled statistik", DTOutput("stats_dt")),
-        tabPanel("Legenda škál (1/5)", DTOutput("legend_dt")),
+        tabPanel("Legenda (read-only)", DTOutput("legend_dt")),
+        tabPanel("Legenda editor (1/5)",
+                 tags$p("Dvojklikni do buněk a uprav text pro 1 a 5. Když je otázka invertovaná, legenda se ve výstupech automaticky prohodí."),
+                 DTOutput("legend_edit_dt")),
         tabPanel("Otevřené odpovědi", uiOutput("open_ui")),
         tabPanel("Diagnostika", verbatimTextOutput("diag"))
       )
@@ -311,11 +297,27 @@ ui <- fluidPage(
 server <- function(input, output, session) {
   
   dat <- reactiveVal(NULL)
+  legend_override <- reactiveVal(NULL)
   
   observeEvent(input$file, {
     req(input$file)
     df <- read_csv(input$file$datapath, show_col_types = FALSE)
     dat(df)
+    
+    drop_cols <- c("Do jaké třídy chodíte?", "Časová značka", "Emailová adresa")
+    cols <- setdiff(names(df), drop_cols)
+    
+    base <- bind_rows(lapply(cols, function(q) {
+      lab <- legend_from_rules(q)
+      data.frame(
+        question = q,
+        label_1 = if (is.null(lab)) NA_character_ else lab$label_1,
+        label_5 = if (is.null(lab)) NA_character_ else lab$label_5,
+        stringsAsFactors = FALSE
+      )
+    }))
+    
+    legend_override(base)
   })
   
   output$class_filter_ui <- renderUI({
@@ -323,65 +325,29 @@ server <- function(input, output, session) {
     req(df)
     
     class_col <- "Do jaké třídy chodíte?"
-    validate(need(class_col %in% names(df),
-                  paste0("V datech chybí sloupec '", class_col, "'.")))
+    validate(need(class_col %in% names(df), paste0("V datech chybí sloupec '", class_col, "'.")))
     
     classes <- sort(unique(na.omit(as.character(df[[class_col]]))))
-    checkboxGroupInput("classes", "Z jakých tříd chceš data?",
-                       choices = classes, selected = classes)
+    checkboxGroupInput("classes", "Z jakých tříd chceš data?", choices = classes, selected = classes)
   })
-  
-  observe({
-    df <- dat()
-    req(df)
-    groups <- categorize_questions_v3(names(df))
-    updatePickerInput(session, "questions", choices = groups)
-  })
-  
-  
-  # --- pomocná funkce: z kategorií nech jen sloupce, které jsou numeric-able ---
-  numeric_candidates_by_group <- reactive({
-    df <- filtered_df()
-    req(df)
-    
-    groups <- categorize_questions_v3(names(df))
-    
-    # převeď skupiny na "jen ty sloupce, které jdou smysluplně na numeric"
-    num_groups <- lapply(groups, function(cols) {
-      cols <- intersect(cols, names(df))
-      ok <- vapply(cols, function(cn) is_good_numeric(to_numeric(df[[cn]])), logical(1))
-      cols[ok]
-    })
-    
-    # vyhoď prázdné skupiny
-    num_groups <- num_groups[lengths(num_groups) > 0]
-    num_groups
-  })
-  
-  observe({
-    ng <- numeric_candidates_by_group()
-    if (length(ng) == 0) {
-      updatePickerInput(session, "vars_corr", choices = character(), selected = character())
-      updatePickerInput(session, "vars_stats", choices = character(), selected = character())
-      return()
-    }
-    
-    # default: vybrat všechno (aby se chování nelišilo od současného)
-    all_vars <- unique(unlist(ng))
-    
-    updatePickerInput(session, "vars_corr", choices = ng, selected = all_vars)
-    updatePickerInput(session, "vars_stats", choices = ng, selected = all_vars)
-  })
-  
   
   filtered_df <- reactive({
     df <- dat()
     req(df, input$classes)
-    class_col <- "Do jaké třídy chodíte?"
-    df %>% filter(.data[[class_col]] %in% input$classes)
+    df %>% filter(.data[["Do jaké třídy chodíte?"]] %in% input$classes)
   })
   
-  # otázky -> typy
+  question_groups <- reactive({
+    df <- dat()
+    req(df)
+    badge_groups(categorize_questions(names(df)))
+  })
+  
+  observe({
+    groups <- question_groups()
+    updatePickerInput(session, "questions", choices = groups)
+  })
+  
   question_info <- reactive({
     df <- filtered_df()
     qs <- input$questions
@@ -404,7 +370,7 @@ server <- function(input, output, session) {
     out
   })
   
-  # nabídka pro inverzi (jen pro numeric škály 1..5)
+  # inverze nabídka jen pro škály 1..5
   observe({
     qi <- question_info()
     if (length(qi) == 0) {
@@ -412,146 +378,232 @@ server <- function(input, output, session) {
       return()
     }
     scale_qs <- names(qi)[vapply(qi, \(z) z$type=="numeric" && z$is_scale, logical(1))]
-    updatePickerInput(session, "invert_questions", choices = scale_qs, selected = intersect(input$invert_questions, scale_qs))
+    updatePickerInput(session, "invert_questions", choices = scale_qs,
+                      selected = intersect(input$invert_questions, scale_qs))
+  })
+  
+  # legenda lookup + invert display
+  legend_lookup <- reactive({
+    lo <- legend_override()
+    if (is.null(lo)) return(NULL)
+    
+    inv <- input$invert_questions
+    inv <- if (is.null(inv)) character() else inv
+    
+    lo2 <- lo
+    lo2$label_1_display <- lo2$label_1
+    lo2$label_5_display <- lo2$label_5
+    
+    idx <- lo2$question %in% inv
+    lo2$label_1_display[idx] <- lo2$label_5[idx]
+    lo2$label_5_display[idx] <- lo2$label_1[idx]
+    lo2
+  })
+  
+  legend_text_for_question <- function(q_title, legend_tbl) {
+    if (is.null(legend_tbl)) return(NA_character_)
+    row <- legend_tbl[match(q_title, legend_tbl$question), , drop = FALSE]
+    if (nrow(row) == 0) return(NA_character_)
+    if (is.na(row$label_1_display[1]) || is.na(row$label_5_display[1])) return(NA_character_)
+    paste0("1 = ", row$label_1_display[1], " | 5 = ", row$label_5_display[1])
+  }
+  
+  # -------------------------
+  # Korelace/Statistiky pickery podle kategorií (jen numeric-able)
+  # -------------------------
+  numeric_candidates_by_group <- reactive({
+    df <- filtered_df()
+    req(df)
+    groups0 <- categorize_questions(names(df))
+    groups <- lapply(groups0, function(cols) {
+      cols <- intersect(cols, names(df))
+      ok <- vapply(cols, function(cn) is_good_numeric(to_numeric(df[[cn]])), logical(1))
+      cols[ok]
+    })
+    groups <- groups[lengths(groups) > 0]
+    badge_groups(groups)
+  })
+  
+  observe({
+    ng <- numeric_candidates_by_group()
+    if (length(ng) == 0) {
+      updatePickerInput(session, "vars_corr", choices = character(), selected = character())
+      updatePickerInput(session, "vars_stats", choices = character(), selected = character())
+      return()
+    }
+    all_vars <- unique(unlist(ng))
+    
+    if (is.null(input$vars_corr) || length(input$vars_corr) == 0) {
+      updatePickerInput(session, "vars_corr", choices = ng, selected = all_vars)
+    } else {
+      updatePickerInput(session, "vars_corr", choices = ng, selected = intersect(input$vars_corr, all_vars))
+    }
+    
+    if (is.null(input$vars_stats) || length(input$vars_stats) == 0) {
+      updatePickerInput(session, "vars_stats", choices = ng, selected = all_vars)
+    } else {
+      updatePickerInput(session, "vars_stats", choices = ng, selected = intersect(input$vars_stats, all_vars))
+    }
   })
   
   # -------------------------
-  # 5A) HISTOGRAMY (mřížka)
-  # - škály 1..5: barplot count + % nad sloupci
-  # - ostatní numeric: histogram count + % nad biny
-  # - categorical: barplot count + %
+  # Histogramy: jeden ggplot + dynamická výška + mean/sd/n (jen pro numeric)
   # -------------------------
-  output$hist_grid <- renderPlot({
+  output$hist_grid_ui <- renderUI({
     df <- filtered_df()
     qi <- question_info()
     req(df)
     
     qs <- names(qi)
+    if (length(qs) == 0) return(plotOutput("hist_grid", height = "300px"))
+    
+    # počet panelů = počet vybraných otázek * (počet tříd nebo 1)
+    k <- if (isTRUE(input$facet_by_class)) length(unique(df[["Do jaké třídy chodíte?"]])) else 1
+    n_panels <- length(qs) * k
+    
+    ncol <- 3
+    nrow <- ceiling(n_panels / ncol)
+    h <- max(650, 240 * nrow)
+    
+    plotOutput("hist_grid", height = paste0(h, "px"))
+  })
+  
+  output$hist_grid <- renderPlot({
+    df <- filtered_df()
+    qi <- question_info()
+    lt <- legend_lookup()
+    req(df)
+    
+    qs <- names(qi)
     validate(need(length(qs) > 0, "Vyber otázky vlevo."))
     
+    top_n <- if (is.null(input$top_n)) 10 else input$top_n
+    facet_class <- isTRUE(input$facet_by_class)
     class_col <- "Do jaké třídy chodíte?"
-    facet_class <- isTRUE(input$facet_by_class) && (class_col %in% names(df))
     
-    # připrav data long pro různé typy
-    plot_blocks <- list()
-    
-    # 1) škály 1..5
+    # ---- SCALE 1..5 as bar ----
     scale_qs <- qs[vapply(qi, \(z) z$type=="numeric" && z$is_scale, logical(1))]
+    d_scale <- tibble()
+    stat_scale <- tibble()
+    
     if (length(scale_qs) > 0) {
       dlong <- bind_rows(lapply(scale_qs, function(q) {
         x <- qi[[q]]$x_num
-        if (!is.null(input$invert_questions) && q %in% input$invert_questions) {
-          x <- invert_1_5(x)
-        }
+        if (!is.null(input$invert_questions) && q %in% input$invert_questions) x <- invert_1_5(x)
         tibble(
           question = q,
+          class = if (facet_class) as.character(df[[class_col]]) else "ALL",
           value = factor(x, levels = 1:5),
-          class = if (facet_class) as.character(df[[class_col]]) else "ALL"
+          value_num = x
         )
       })) %>% filter(!is.na(value))
       
-      # spočti % v rámci question (+ případně class)
-      dsum <- dlong %>%
+      # counts + %
+      d_scale <- dlong %>%
         count(question, class, value, name = "n") %>%
         group_by(question, class) %>%
         mutate(p = 100 * n / sum(n)) %>%
-        ungroup()
-      
-      p1 <- ggplot(dsum, aes(x = value, y = n)) +
-        geom_col() +
-        geom_text(aes(label = sprintf("%.1f%%", p)), vjust = -0.2, size = 3) +
-        labs(x = NULL, y = "Absolutní četnost", title = "Škály 1–5 (count + %)") +
-        facet_wrap(~ question + class, scales = "free_y") +
-        theme(axis.text.x = element_text(angle = 0))
-      plot_blocks[["scale"]] <- p1
-    }
-    
-    # 2) ostatní numeric
-    cont_qs <- qs[vapply(qi, \(z) z$type=="numeric" && !z$is_scale, logical(1))]
-    if (length(cont_qs) > 0) {
-      dlong <- bind_rows(lapply(cont_qs, function(q) {
-        tibble(
-          question = q,
-          x = qi[[q]]$x_num,
-          class = if (facet_class) as.character(df[[class_col]]) else "ALL"
+        ungroup() %>%
+        mutate(
+          type = "Škála 1–5",
+          facet_lab = paste0(question, "\n", coalesce(legend_text_for_question(question, lt), ""))
         )
-      })) %>% filter(!is.na(x))
       
-      # histogram s % nad biny
-      p2 <- ggplot(dlong, aes(x = x)) +
-        geom_histogram(bins = 20, aes(y = after_stat(count))) +
-        geom_text(
-          stat = "bin", bins = 20,
-          aes(
-            y = after_stat(count),
-            label = sprintf("%.1f%%", 100 * after_stat(count) / sum(after_stat(count)))
-          ),
-          vjust = -0.2, size = 3
-        ) +
-        labs(x = NULL, y = "Absolutní četnost", title = "Numerické (histogram count + %)") +
-        facet_wrap(~ question + class, scales = "free") +
-        theme(axis.text.x = element_text(angle = 0))
-      plot_blocks[["cont"]] <- p2
+      # mean/sd/n label per panel
+      stat_scale <- dlong %>%
+        filter(!is.na(value_num)) %>%
+        group_by(question, class) %>%
+        summarise(
+          n = sum(!is.na(value_num)),
+          mean = mean(value_num, na.rm = TRUE),
+          sd = sd(value_num, na.rm = TRUE),
+          .groups = "drop"
+        ) %>%
+        mutate(
+          type = "Škála 1–5",
+          facet_lab = paste0(question, "\n", coalesce(legend_text_for_question(question, lt), "")),
+          label = paste0("n=", n, "\nmean=", signif(mean, 3), "\nsd=", signif(sd, 3))
+        )
     }
     
-    # 3) kategorické
+    # ---- CATEGORICAL as bar ----
     cat_qs <- qs[vapply(qi, \(z) z$type=="categorical", logical(1))]
+    d_cat <- tibble()
     if (length(cat_qs) > 0) {
-      dlong <- bind_rows(lapply(cat_qs, function(q) {
+      d_cat <- bind_rows(lapply(cat_qs, function(q) {
         x <- str_trim(as.character(qi[[q]]$x_chr))
         x[is.na(x) | x == ""] <- "(missing)"
+        x <- fct_lump_n(factor(x), n = top_n, other_level = "Other")
+        
         tibble(
           question = q,
-          value = fct_lump_n(factor(x), n = input$top_n, other_level = "Other"),
-          class = if (facet_class) as.character(df[[class_col]]) else "ALL"
+          class = if (facet_class) as.character(df[[class_col]]) else "ALL",
+          value = x
         )
-      }))
-      
-      dsum <- dlong %>%
+      })) %>%
         count(question, class, value, name = "n") %>%
         group_by(question, class) %>%
         mutate(p = 100 * n / sum(n)) %>%
-        ungroup()
-      
-      p3 <- ggplot(dsum, aes(x = value, y = n)) +
-        geom_col() +
-        geom_text(aes(label = sprintf("%.1f%%", p)), vjust = -0.2, size = 3) +
-        labs(x = NULL, y = "Absolutní četnost", title = "Kategorické (count + %)") +
-        facet_wrap(~ question + class, scales = "free_y") +
-        theme(axis.text.x = element_text(angle = 45, hjust = 1))
-      plot_blocks[["cat"]] <- p3
+        ungroup() %>%
+        mutate(type = "Kategorické", facet_lab = question)
     }
     
-    validate(need(length(plot_blocks) > 0, "Není co vykreslit (zvolené otázky nemají data po filtru)."))
+    d_all <- bind_rows(d_scale, d_cat) %>%
+      mutate(panel = if (facet_class) paste0(class, " | ", facet_lab) else facet_lab)
     
-    # “vše” do jednoho plátna: vykreslíme postupně (base grafika neumí patchwork),
-    # proto využijeme layout: pokud jsou >1 bloky, dáme je pod sebe.
-    # RStudio to zvládne přes par(mfrow).
-    nblocks <- length(plot_blocks)
-    oldpar <- par(no.readonly = TRUE)
-    on.exit(par(oldpar), add = TRUE)
-    par(mfrow = c(nblocks, 1), mar = c(4, 4, 3, 1))
+    validate(need(nrow(d_all) > 0, "Není co vykreslit."))
     
-    for (nm in names(plot_blocks)) {
-      print(plot_blocks[[nm]])
-    }
+    # stat labels map to same panel
+    stat_all <- stat_scale %>%
+      mutate(panel = if (facet_class) paste0(class, " | ", facet_lab) else facet_lab)
+    
+    ggplot(d_all, aes(x = value, y = n)) +
+      geom_col() +
+      geom_text(aes(label = sprintf("%.1f%%", p)), vjust = -0.2, size = 3) +
+      geom_text(
+        data = stat_all,
+        aes(x = Inf, y = Inf, label = label),
+        inherit.aes = FALSE,
+        hjust = 1.05, vjust = 1.1,
+        size = 3
+      ) +
+      facet_wrap(type ~ panel, scales = "free_y", ncol = 3) +
+      labs(x = NULL, y = "Absolutní četnost") +
+      theme(
+        strip.text = element_text(size = 9),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.margin = margin(10, 10, 10, 10)
+      )
   })
   
   # -------------------------
-  # 5B) BOXPLOTY (všechny numeric v jednom)
-  # - mean bod + sd errorbar
+  # Boxploty: jeden graf + dynamická výška + mean/sd/n text + legenda v caption
   # -------------------------
+  output$box_all_ui <- renderUI({
+    df <- filtered_df()
+    qi <- question_info()
+    req(df)
+    
+    num_q <- sum(vapply(qi, \(z) z$type=="numeric", logical(1)))
+    if (num_q == 0) return(plotOutput("box_all", height = "300px"))
+    
+    k <- if (isTRUE(input$facet_by_class)) length(unique(df[["Do jaké třídy chodíte?"]])) else 1
+    h <- max(650, 130 * num_q * k)
+    plotOutput("box_all", height = paste0(h, "px"))
+  })
+  
   output$box_all <- renderPlot({
     df <- filtered_df()
     qi <- question_info()
+    lt <- legend_lookup()
     req(df)
     
     qs <- names(qi)
     num_qs <- qs[vapply(qi, \(z) z$type=="numeric", logical(1))]
     validate(need(length(num_qs) > 0, "Vyber aspoň jednu numerickou otázku."))
     
+    facet_class <- isTRUE(input$facet_by_class)
     class_col <- "Do jaké třídy chodíte?"
-    facet_class <- isTRUE(input$facet_by_class) && (class_col %in% names(df))
     
     dlong <- bind_rows(lapply(num_qs, function(q) {
       x <- qi[[q]]$x_num
@@ -567,327 +619,108 @@ server <- function(input, output, session) {
     
     validate(need(nrow(dlong) > 1, "Málo dat pro boxplot."))
     
+    box_stats <- dlong %>%
+      group_by(question, class) %>%
+      summarise(
+        n = n(),
+        mean = mean(value),
+        sd = sd(value),
+        ymax = max(value),
+        .groups = "drop"
+      ) %>%
+      mutate(label = paste0("n=", n, "  mean=", signif(mean, 3), "  sd=", signif(sd, 3)))
+    
+    # caption legenda (jen pro ty otázky, kde ji známe)
+    cap_lines <- lapply(num_qs, function(q) {
+      txt <- legend_text_for_question(q, lt)
+      if (is.na(txt)) return(NULL)
+      paste0("• ", str_trunc(q, 90), " — ", txt)
+    })
+    cap_lines <- Filter(Negate(is.null), cap_lines)
+    cap <- if (length(cap_lines) == 0) NULL else paste(cap_lines, collapse = "\n")
+    
     p <- ggplot(dlong, aes(x = question, y = value)) +
       geom_boxplot() +
       stat_summary(fun = mean, geom = "point", size = 2) +
       stat_summary(fun.data = function(x) {
-        m <- mean(x, na.rm = TRUE)
-        s <- sd(x, na.rm = TRUE)
+        m <- mean(x, na.rm = TRUE); s <- sd(x, na.rm = TRUE)
         data.frame(y = m, ymin = m - s, ymax = m + s)
       }, geom = "errorbar", width = 0.15) +
-      labs(x = NULL, y = "Hodnota", title = "Boxploty + mean + sd") +
-      theme(axis.text.x = element_text(angle = 35, hjust = 1))
+      geom_text(
+        data = box_stats,
+        aes(x = question, y = ymax, label = label),
+        inherit.aes = FALSE,
+        vjust = -0.6,
+        size = 3
+      ) +
+      coord_cartesian(clip = "off") +
+      labs(x = NULL, y = "Hodnota", title = "Boxploty + mean + sd", caption = cap) +
+      theme(
+        axis.text.x = element_text(angle = 35, hjust = 1),
+        plot.caption = element_text(hjust = 0),
+        plot.margin = margin(10, 10, 20, 10)
+      )
     
     if (facet_class) p <- p + facet_wrap(~ class, scales = "free_y")
-    
     p
   })
   
   # -------------------------
-  # 5C) NUMERIC DF pro korelace a statistiky
-  # -------------------------
-  numeric_df <- reactive({
-    df <- filtered_df()
-    req(df)
-    
-    drop_cols <- c("Do jaké třídy chodíte?", "Časová značka", "Emailová adresa")
-    cols <- setdiff(names(df), drop_cols)
-    
-    # !!! nově: omez podle výběru pro korelace
-    if (!is.null(input$vars_corr) && length(input$vars_corr) > 0) {
-      cols <- intersect(cols, input$vars_corr)
-    } else {
-      # když uživatel odklikne všechno, nech to prázdné
-      return(NULL)
-    }
-    
-    if (length(cols) == 0) return(NULL)
-    
-    tmp <- lapply(cols, function(cn) to_numeric(df[[cn]]))
-    names(tmp) <- cols
-    
-    keep <- vapply(tmp, is_good_numeric, logical(1))
-    if (!any(keep)) return(NULL)
-    
-    nd <- as.data.frame(tmp[keep], check.names = FALSE)
-    
-    # inverze škál (jak už máš)
-    inv <- input$invert_questions
-    if (!is.null(inv) && length(inv) > 0) {
-      for (q in intersect(names(nd), inv)) {
-        if (is_scale_1_5(nd[[q]])) nd[[q]] <- invert_1_5(nd[[q]])
-      }
-    }
-    
-    nd
-  })
-  
-  numeric_df_stats <- reactive({
-    df <- filtered_df()
-    req(df)
-    
-    drop_cols <- c("Do jaké třídy chodíte?", "Časová značka", "Emailová adresa")
-    cols <- setdiff(names(df), drop_cols)
-    
-    # !!! nově: omez podle výběru pro statistiky
-    if (!is.null(input$vars_stats) && length(input$vars_stats) > 0) {
-      cols <- intersect(cols, input$vars_stats)
-    } else {
-      return(NULL)
-    }
-    
-    if (length(cols) == 0) return(NULL)
-    
-    tmp <- lapply(cols, function(cn) to_numeric(df[[cn]]))
-    names(tmp) <- cols
-    
-    keep <- vapply(tmp, is_good_numeric, logical(1))
-    if (!any(keep)) return(NULL)
-    
-    nd <- as.data.frame(tmp[keep], check.names = FALSE)
-    
-    # inverze škál i tady (aby stats odpovídaly grafům)
-    inv <- input$invert_questions
-    if (!is.null(inv) && length(inv) > 0) {
-      for (q in intersect(names(nd), inv)) {
-        if (is_scale_1_5(nd[[q]])) nd[[q]] <- invert_1_5(nd[[q]])
-      }
-    }
-    
-    nd
-  })
-  
-  # korelace + N pro každý pár
-  pair_table <- reactive({
-    nd <- numeric_df()
-    if (is.null(nd)) return(NULL)
-    vars <- names(nd)
-    
-    # spočti korelace a n pro každý pár
-    combs <- combn(vars, 2, simplify = FALSE)
-    res <- lapply(combs, function(vp) {
-      x <- nd[[vp[1]]]
-      y <- nd[[vp[2]]]
-      cc <- complete.cases(x, y)
-      n <- sum(cc)
-      r <- if (n >= 3) cor(x[cc], y[cc]) else NA_real_
-      data.frame(var1 = vp[1], var2 = vp[2], r = r, n = n, stringsAsFactors = FALSE)
-    }) |> bind_rows()
-    
-    res <- res %>% mutate(abs_r = abs(r))
-    res
-  })
-  
-  # preset buttons
-  observeEvent(input$preset_medium, {
-    updateSliderInput(session, "absr_range", value = c(0.4, 0.7))
-  })
-  observeEvent(input$preset_strong, {
-    updateSliderInput(session, "absr_range", value = c(0.7, 1.0))
-  })
-  
-  filtered_pairs <- reactive({
-    pt <- pair_table()
-    if (is.null(pt)) return(NULL)
-    rng <- input$absr_range
-    pt %>%
-      filter(!is.na(r), abs_r >= rng[1], abs_r <= rng[2]) %>%
-      arrange(desc(abs_r), desc(n))
-  })
-  
-  # tabulka párů
-  output$pairs_dt <- renderDT({
-    fp <- filtered_pairs()
-    validate(need(!is.null(fp), "Žádné numerické proměnné po filtru tříd."))
-    
-    datatable(
-      fp %>% select(var1, var2, r, abs_r, n),
-      rownames = FALSE,
-      options = list(pageLength = 15, order = list(list(4, "desc"))),
-      selection = "single"
-    ) %>% formatRound(c("r", "abs_r"), digits = 3)
-  })
-  
-  # klik na řádek v pairs -> vyplň regresi
-  observeEvent(input$pairs_dt_rows_selected, {
-    fp <- filtered_pairs()
-    req(fp)
-    idx <- input$pairs_dt_rows_selected
-    if (length(idx) != 1) return()
-    updateSelectInput(session, "reg_x", selected = fp$var1[idx])
-    updateSelectInput(session, "reg_y", selected = fp$var2[idx])
-  })
-  
-  # korelační matice: omez na proměnné, které se objevují v filtrovaných párech
-  corr_mat <- reactive({
-    nd <- numeric_df()
-    fp <- filtered_pairs()
-    if (is.null(nd)) return(NULL)
-    if (!is.null(fp) && nrow(fp) > 0) {
-      vars <- unique(c(fp$var1, fp$var2))
-      nd <- nd[, vars, drop = FALSE]
-    }
-    cor(nd, use = "pairwise.complete.obs")
-  })
-  
-  output$corr_dt <- renderDT({
-    cm <- corr_mat()
-    validate(need(!is.null(cm), "Žádná korelační matice k zobrazení."))
-    
-    dfc <- as.data.frame(cm, check.names = FALSE)
-    dfc <- cbind(Variable = rownames(dfc), dfc)
-    rownames(dfc) <- NULL
-    
-    datatable(
-      dfc,
-      options = list(scrollX = TRUE, pageLength = 10),
-      selection = "single"
-    ) %>%
-      formatRound(columns = names(dfc)[-1], digits = 3) %>%
-      formatStyle(
-        columns = names(dfc)[-1],
-        backgroundColor = styleInterval(
-          c(-0.8, -0.6, -0.4, -0.2, 0.2, 0.4, 0.6, 0.8),
-          c("#67001f","#b2182b","#d6604d","#f4a582","#f7f7f7","#92c5de","#4393c3","#2166ac","#053061")
-        ),
-        color = "black"
-      )
-  })
-  
-  # klik na buňku matice -> vyplň regresi (X=sloupec, Y=řádek)
-  observeEvent(input$corr_dt_cell_clicked, {
-    info <- input$corr_dt_cell_clicked
-    cm <- corr_mat()
-    if (is.null(cm)) return()
-    row <- info$row
-    col <- info$col
-    if (is.null(row) || is.null(col)) return()
-    if (col == 1) return()
-    
-    vars <- colnames(cm)
-    x_var <- vars[col - 1]
-    y_var <- vars[row]
-    if (!is.null(x_var) && !is.null(y_var) && x_var != y_var) {
-      updateSelectInput(session, "reg_x", selected = x_var)
-      updateSelectInput(session, "reg_y", selected = y_var)
-    }
-  })
-  
-  # naplň selecty pro regresi
-  observe({
-    nd <- numeric_df()
-    if (is.null(nd)) {
-      updateSelectInput(session, "reg_x", choices = character())
-      updateSelectInput(session, "reg_y", choices = character())
-      return()
-    }
-    vars <- names(nd)
-    updateSelectInput(session, "reg_x", choices = vars, selected = vars[1])
-    updateSelectInput(session, "reg_y", choices = vars, selected = vars[min(2, length(vars))])
-  })
-  
-  # regrese: po stisku tlačítka
-  reg_result <- eventReactive(input$run_reg, {
-    nd <- numeric_df()
-    req(nd, input$reg_x, input$reg_y)
-    validate(need(input$reg_x %in% names(nd), "X není numerická proměnná."))
-    validate(need(input$reg_y %in% names(nd), "Y není numerická proměnná."))
-    
-    x <- nd[[input$reg_x]]
-    y <- nd[[input$reg_y]]
-    dfxy <- data.frame(x = x, y = y) %>% filter(complete.cases(.))
-    validate(need(nrow(dfxy) >= 5, "Málo pozorování pro regresi."))
-    
-    fit <- lm(y ~ x, data = dfxy)
-    list(df = dfxy, fit = fit)
-  })
-  
-  output$reg_plot <- renderPlot({
-    rr <- reg_result()
-    req(rr)
-    ggplot(rr$df, aes(x = x, y = y)) +
-      geom_point() +
-      geom_smooth(method = "lm", se = FALSE) +
-      labs(
-        x = input$reg_x,
-        y = input$reg_y,
-        title = "Lineární regrese (y ~ x)"
-      )
-  })
-  
-  output$reg_summary <- renderPrint({
-    rr <- reg_result()
-    req(rr)
-    sm <- summary(rr$fit)
-    
-    cat("Počet pozorování (complete cases):", nrow(rr$df), "\n")
-    cat("R-squared:", signif(sm$r.squared, 4), "\n\n")
-    cat("Koeficienty:\n")
-    print(coef(sm))
-  })
-  
-  # -------------------------
-  # 5D) Statistiky + legenda 1/5
-  # -------------------------
-  output$stats_dt <- renderDT({
-    nd <- numeric_df_stats()
-    validate(need(!is.null(nd), "Žádné numerické proměnné po filtru tříd."))
-    
-    stats <- lapply(names(nd), function(v) {
-      s <- numeric_summary(nd[[v]])
-      data.frame(
-        variable = v,
-        legend_1_5 = legend_text_for_question(v),
-        n = s$n,
-        mean = s$mean,
-        sd = s$sd,
-        pct_missing = s$pct_missing,
-        stringsAsFactors = FALSE
-      )
-    }) |> bind_rows()
-    
-    datatable(
-      stats,
-      options = list(pageLength = 20, order = list(list(4, "desc"))),
-      rownames = FALSE
-    ) %>%
-      formatRound(c("mean","sd","pct_missing"), digits = 3)
-  })
-  
-  # -------------------------
-  # 5E) Legenda škál tabulka
+  # Legenda read-only + editor (DT editable)
   # -------------------------
   output$legend_dt <- renderDT({
-    df <- dat()
-    req(df)
+    lt <- legend_lookup()
+    validate(need(!is.null(lt), "Nahraj CSV nejdřív."))
     
-    drop_cols <- c("Do jaké třídy chodíte?", "Časová značka", "Emailová adresa")
-    cols <- setdiff(names(df), drop_cols)
+    view <- lt %>% transmute(question, label_1 = label_1_display, label_5 = label_5_display)
+    datatable(view, options = list(pageLength = 25, scrollX = TRUE), rownames = FALSE)
+  })
+  
+  output$legend_edit_dt <- renderDT({
+    lo <- legend_override()
+    validate(need(!is.null(lo), "Nahraj CSV nejdřív."))
     
-    leg <- lapply(cols, function(q) {
-      lab <- legend_labels_for_question(q)
-      data.frame(
-        question = q,
-        label_1 = if (is.null(lab)) NA_character_ else lab$label_1,
-        label_5 = if (is.null(lab)) NA_character_ else lab$label_5,
-        stringsAsFactors = FALSE
+    inv <- input$invert_questions
+    inv <- if (is.null(inv)) character() else inv
+    
+    lo2 <- lo %>%
+      mutate(
+        inverted = question %in% inv,
+        label_1_after_invert = ifelse(inverted, label_5, label_1),
+        label_5_after_invert = ifelse(inverted, label_1, label_5)
       )
-    }) |> bind_rows()
     
     datatable(
-      leg,
-      options = list(pageLength = 25, order = list(list(1, "asc"))),
+      lo2,
+      editable = list(target = "cell", disable = list(columns = c(1,4,5,6))),
+      options = list(pageLength = 20, scrollX = TRUE),
       rownames = FALSE
     )
   })
   
+  observeEvent(input$legend_edit_dt_cell_edit, {
+    info <- input$legend_edit_dt_cell_edit
+    lo <- legend_override()
+    req(lo)
+    
+    i <- info$row
+    j <- info$col
+    v <- info$value
+    
+    # 1=question, 2=label_1, 3=label_5 ...
+    if (j %in% c(2, 3)) {
+      lo[i, j] <- v
+      legend_override(lo)
+    }
+  })
+  
   # -------------------------
-  # 5F) Otevřené odpovědi
+  # Otevřené odpovědi
   # -------------------------
   output$open_ui <- renderUI({
     qi <- question_info()
     if (length(qi) == 0) return(tags$div("Vyber otázky vlevo."))
-    open_qs <- names(qi)[vapply(qi, \(z) z$type == "open", logical(1))]
+    open_qs <- names(qi)[vapply(qi, \(z) z$type=="open", logical(1))]
     if (length(open_qs) == 0) return(tags$div("Žádná vybraná otázka nebyla rozpoznána jako otevřená."))
     
     tagList(lapply(seq_along(open_qs), function(i) {
@@ -901,7 +734,7 @@ server <- function(input, output, session) {
     df <- filtered_df()
     qi <- question_info()
     req(df)
-    open_qs <- names(qi)[vapply(qi, \(z) z$type == "open", logical(1))]
+    open_qs <- names(qi)[vapply(qi, \(z) z$type=="open", logical(1))]
     
     for (i in seq_along(open_qs)) {
       local({
@@ -914,6 +747,204 @@ server <- function(input, output, session) {
         })
       })
     }
+  })
+  
+  # -------------------------
+  # Korelace & regrese (ponechávám, jen pickery + presety)
+  # -------------------------
+  observeEvent(input$preset_medium, { updateSliderInput(session, "absr_range", value = c(0.4, 0.7)) })
+  observeEvent(input$preset_strong, { updateSliderInput(session, "absr_range", value = c(0.7, 1.0)) })
+  
+  numeric_df_corr <- reactive({
+    df <- filtered_df()
+    req(df)
+    
+    drop_cols <- c("Do jaké třídy chodíte?", "Časová značka", "Emailová adresa")
+    cols <- setdiff(names(df), drop_cols)
+    
+    if (!is.null(input$vars_corr) && length(input$vars_corr) > 0) cols <- intersect(cols, input$vars_corr) else return(NULL)
+    if (length(cols) == 0) return(NULL)
+    
+    tmp <- lapply(cols, function(cn) to_numeric(df[[cn]]))
+    names(tmp) <- cols
+    keep <- vapply(tmp, is_good_numeric, logical(1))
+    if (!any(keep)) return(NULL)
+    
+    nd <- as.data.frame(tmp[keep], check.names = FALSE)
+    inv <- input$invert_questions
+    if (!is.null(inv) && length(inv) > 0) {
+      for (q in intersect(names(nd), inv)) if (is_scale_1_5(nd[[q]])) nd[[q]] <- invert_1_5(nd[[q]])
+    }
+    nd
+  })
+  
+  pair_table <- reactive({
+    nd <- numeric_df_corr()
+    if (is.null(nd)) return(NULL)
+    vars <- names(nd)
+    if (length(vars) < 2) return(NULL)
+    
+    combs <- combn(vars, 2, simplify = FALSE)
+    res <- bind_rows(lapply(combs, function(vp) {
+      x <- nd[[vp[1]]]; y <- nd[[vp[2]]]
+      cc <- complete.cases(x, y)
+      n <- sum(cc)
+      r <- if (n >= 3) cor(x[cc], y[cc]) else NA_real_
+      data.frame(var1 = vp[1], var2 = vp[2], r = r, n = n, stringsAsFactors = FALSE)
+    }))
+    res %>% mutate(abs_r = abs(r))
+  })
+  
+  filtered_pairs <- reactive({
+    pt <- pair_table()
+    if (is.null(pt)) return(NULL)
+    rng <- input$absr_range
+    pt %>% filter(!is.na(r), abs_r >= rng[1], abs_r <= rng[2]) %>% arrange(desc(abs_r), desc(n))
+  })
+  
+  output$pairs_dt <- renderDT({
+    fp <- filtered_pairs()
+    validate(need(!is.null(fp) && nrow(fp) > 0, "Žádné páry v zadaném intervalu |r|."))
+    datatable(fp %>% select(var1, var2, r, abs_r, n),
+              rownames = FALSE,
+              options = list(pageLength = 15, order = list(list(4, "desc"))),
+              selection = "single") %>% formatRound(c("r","abs_r"), 3)
+  })
+  
+  observeEvent(input$pairs_dt_rows_selected, {
+    fp <- filtered_pairs()
+    req(fp)
+    idx <- input$pairs_dt_rows_selected
+    if (length(idx) != 1) return()
+    updateSelectInput(session, "reg_x", selected = fp$var1[idx])
+    updateSelectInput(session, "reg_y", selected = fp$var2[idx])
+  })
+  
+  corr_mat <- reactive({
+    nd <- numeric_df_corr()
+    fp <- filtered_pairs()
+    if (is.null(nd)) return(NULL)
+    if (!is.null(fp) && nrow(fp) > 0) {
+      vars <- unique(c(fp$var1, fp$var2))
+      nd <- nd[, vars, drop = FALSE]
+    }
+    cor(nd, use = "pairwise.complete.obs")
+  })
+  
+  output$corr_dt <- renderDT({
+    cm <- corr_mat()
+    validate(need(!is.null(cm), "Žádná korelační matice k zobrazení."))
+    dfc <- as.data.frame(cm, check.names = FALSE)
+    dfc <- cbind(Variable = rownames(dfc), dfc)
+    rownames(dfc) <- NULL
+    
+    datatable(dfc, options = list(scrollX = TRUE, pageLength = 10), selection = "single") %>%
+      formatRound(columns = names(dfc)[-1], digits = 3) %>%
+      formatStyle(
+        columns = names(dfc)[-1],
+        backgroundColor = styleInterval(
+          c(-0.8, -0.6, -0.4, -0.2, 0.2, 0.4, 0.6, 0.8),
+          c("#67001f","#b2182b","#d6604d","#f4a582","#f7f7f7","#92c5de","#4393c3","#2166ac","#053061")
+        ),
+        color = "black"
+      )
+  })
+  
+  observeEvent(input$corr_dt_cell_clicked, {
+    info <- input$corr_dt_cell_clicked
+    cm <- corr_mat()
+    if (is.null(cm)) return()
+    row <- info$row; col <- info$col
+    if (is.null(row) || is.null(col) || col == 1) return()
+    vars <- colnames(cm)
+    updateSelectInput(session, "reg_x", selected = vars[col - 1])
+    updateSelectInput(session, "reg_y", selected = vars[row])
+  })
+  
+  observe({
+    nd <- numeric_df_corr()
+    if (is.null(nd)) {
+      updateSelectInput(session, "reg_x", choices = character())
+      updateSelectInput(session, "reg_y", choices = character())
+      return()
+    }
+    vars <- names(nd)
+    updateSelectInput(session, "reg_x", choices = vars, selected = vars[1])
+    updateSelectInput(session, "reg_y", choices = vars, selected = vars[min(2, length(vars))])
+  })
+  
+  reg_result <- eventReactive(input$run_reg, {
+    nd <- numeric_df_corr()
+    req(nd, input$reg_x, input$reg_y)
+    x <- nd[[input$reg_x]]; y <- nd[[input$reg_y]]
+    dfxy <- data.frame(x=x, y=y) %>% filter(complete.cases(.))
+    validate(need(nrow(dfxy) >= 5, "Málo pozorování pro regresi."))
+    fit <- lm(y ~ x, data=dfxy)
+    list(df=dfxy, fit=fit)
+  })
+  
+  output$reg_plot <- renderPlot({
+    rr <- reg_result()
+    req(rr)
+    ggplot(rr$df, aes(x=x, y=y)) + geom_point() + geom_smooth(method="lm", se=FALSE) +
+      labs(x=input$reg_x, y=input$reg_y, title="Lineární regrese (y ~ x)")
+  })
+  
+  output$reg_summary <- renderPrint({
+    rr <- reg_result()
+    req(rr)
+    sm <- summary(rr$fit)
+    cat("Počet pozorování:", nrow(rr$df), "\n")
+    cat("R-squared:", signif(sm$r.squared, 4), "\n\n")
+    print(coef(sm))
+  })
+  
+  # -------------------------
+  # Statistiky (mean/sd + legenda)
+  # -------------------------
+  numeric_df_stats <- reactive({
+    df <- filtered_df()
+    req(df)
+    
+    drop_cols <- c("Do jaké třídy chodíte?", "Časová značka", "Emailová adresa")
+    cols <- setdiff(names(df), drop_cols)
+    
+    if (!is.null(input$vars_stats) && length(input$vars_stats) > 0) cols <- intersect(cols, input$vars_stats) else return(NULL)
+    if (length(cols) == 0) return(NULL)
+    
+    tmp <- lapply(cols, function(cn) to_numeric(df[[cn]]))
+    names(tmp) <- cols
+    keep <- vapply(tmp, is_good_numeric, logical(1))
+    if (!any(keep)) return(NULL)
+    
+    nd <- as.data.frame(tmp[keep], check.names = FALSE)
+    inv <- input$invert_questions
+    if (!is.null(inv) && length(inv) > 0) {
+      for (q in intersect(names(nd), inv)) if (is_scale_1_5(nd[[q]])) nd[[q]] <- invert_1_5(nd[[q]])
+    }
+    nd
+  })
+  
+  output$stats_dt <- renderDT({
+    nd <- numeric_df_stats()
+    lt <- legend_lookup()
+    validate(need(!is.null(nd), "Žádné numerické proměnné po filtru (nebo nic nevybráno)."))
+    
+    stats <- bind_rows(lapply(names(nd), function(v) {
+      s <- numeric_summary(nd[[v]])
+      data.frame(
+        variable = v,
+        legend_1_5 = legend_text_for_question(v, lt),
+        n = s$n,
+        mean = s$mean,
+        sd = s$sd,
+        pct_missing = s$pct_missing,
+        stringsAsFactors = FALSE
+      )
+    }))
+    
+    datatable(stats, options = list(pageLength = 20, order = list(list(4, "desc")), scrollX = TRUE), rownames = FALSE) %>%
+      formatRound(c("mean","sd","pct_missing"), 3)
   })
   
   # -------------------------
@@ -934,11 +965,6 @@ server <- function(input, output, session) {
             "\n")
       }
     }
-    
-    nd <- numeric_df()
-    cat("\nPočet numerických proměnných pro korelace:", if (is.null(nd)) 0 else ncol(nd), "\n")
-    fp <- filtered_pairs()
-    cat("Počet párů po filtru |r|:", if (is.null(fp)) 0 else nrow(fp), "\n")
   })
 }
 
