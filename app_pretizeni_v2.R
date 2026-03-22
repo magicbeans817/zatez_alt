@@ -26,11 +26,6 @@ sanitize_names <- function(nms) {
 
 
 
-
-
-
-
-
 # -------------------------
 # 1) HELPERS
 # -------------------------
@@ -207,21 +202,48 @@ question_choices_grouped <- function(df) {
 # 2) UI
 # -------------------------
 ui <- fluidPage(
-  titlePanel("Přetížení – analytická Shiny aplikace"),
+  tags$head(
+    tags$style(HTML("
+      body { background: #f6f8fb; }
+      .app-title { margin-bottom: 16px; }
+      .app-title h2 { color: #1f3c88; font-weight: 700; margin-bottom: 4px; }
+      .app-title p { color: #5b657a; margin-bottom: 0; }
+      .well { background: #ffffff; border: 1px solid #e3e8f2; border-radius: 14px; box-shadow: 0 4px 14px rgba(31,60,136,0.06); }
+      .nav-tabs { border-bottom: 1px solid #dfe5f0; }
+      .nav-tabs > li > a { color: #33415c; font-weight: 600; }
+      .nav-tabs > li.active > a, .nav-tabs > li.active > a:hover { background: #ffffff; color: #1f3c88; border-top: 3px solid #1f3c88; }
+      .control-label, h4 { color: #23314d; font-weight: 700; }
+      .btn-default, .btn-primary { border-radius: 10px; }
+      .irs-bar, .irs-bar-edge, .irs-single { background: #3b82f6; border-color: #3b82f6; }
+      .irs-from, .irs-to, .irs-single { background: #1f3c88; }
+    "))
+  ),
+  div(
+    class = "app-title",
+    h2("Přetížení – analytická Shiny aplikace"),
+    p("Přehled otázek, srovnání tříd, korelace a otevřené odpovědi na jednom místě.")
+  ),
   sidebarLayout(
     sidebarPanel(
+      width = 3,
       fileInput("file", "Nahraj CSV s daty:", accept = c(".csv")),
       tags$small("Pokud nic nenahraješ, aplikace se pokusí použít data_pretizeni/data_pretizenik z pracovní složky."),
       hr(),
       uiOutput("class_filter_ui"),
       hr(),
+      selectInput("subject_filter", "Předmět:", choices = "Vše", selected = "Vše"),
       pickerInput(
-        selectInput("subject_filter", "Předmět:", choices = NULL, selected = "Vše"),
         "questions",
         "Vyber otázky:",
         choices = NULL,
         multiple = TRUE,
-        options = pickerOptions(`actions-box` = TRUE, `live-search` = TRUE, `selected-text-format` = "count > 3")
+        options = pickerOptions(
+          `actions-box` = TRUE,
+          `live-search` = TRUE,
+          `selected-text-format` = "count > 3",
+          size = 15,
+          `live-search-placeholder` = "Piš název otázky nebo předmět..."
+        )
       ),
       checkboxInput("facet_by_class", "Rozdělit podle tříd", value = FALSE),
       sliderInput("top_n", "TOP kategorií (zbytek = Other):", min = 4, max = 20, value = 10, step = 1),
@@ -253,16 +275,19 @@ ui <- fluidPage(
       ),
       hr(),
       h4("Legenda"),
-      textInput("legend_path", "Cesta k legenda.csv:", value = ifelse(is.null(legend_file_default()), "legenda.csv", legend_file_default())),
-      actionButton("reload_legend", "Načíst legendu"),
-      actionButton("save_legend", "Uložit legendu"),
-      br(), br(),
+      textInput("legend_path", "Cesta k legenda.csv:", value = legend_file_default()),
+      fluidRow(
+        column(6, actionButton("reload_legend", "Načíst legendu", width = "100%")),
+        column(6, actionButton("save_legend", "Uložit legendu", width = "100%"))
+      ),
+      br(),
       textOutput("legend_status")
     ),
     mainPanel(
+      width = 9,
       tabsetPanel(
-        tabPanel("Histogramy", uiOutput("hist_grid_ui")),
-        tabPanel("Boxploty", uiOutput("box_all_ui")),
+        tabPanel("Histogramy", plotOutput("hist_grid", height = "900px")),
+        tabPanel("Boxploty", plotOutput("box_all", height = "900px")),
         tabPanel("Korelace & regrese",
                  h4("Páry proměnných"),
                  DTOutput("pairs_dt"),
@@ -273,7 +298,7 @@ ui <- fluidPage(
                  fluidRow(
                    column(4, selectInput("reg_x", "X proměnná:", choices = NULL)),
                    column(4, selectInput("reg_y", "Y proměnná:", choices = NULL)),
-                   column(4, actionButton("run_reg", "Spočítat regresi"))
+                   column(4, br(), actionButton("run_reg", "Spočítat regresi", width = "100%"))
                  ),
                  br(),
                  plotOutput("reg_plot", height = "380px"),
@@ -281,9 +306,6 @@ ui <- fluidPage(
         ),
         tabPanel("Přehled statistik", DTOutput("stats_dt")),
         tabPanel("Legenda", DTOutput("legend_dt")),
-        tabPanel("Editor legendy",
-                 tags$p("Dvojklikni do buněk label_1 a label_5. Tlačítko Uložit legendu zapíše změny do legenda.csv."),
-                 DTOutput("legend_edit_dt")),
         tabPanel("Otevřené odpovědi", uiOutput("open_ui")),
         tabPanel("Diagnostika", verbatimTextOutput("diag"))
       )
@@ -363,7 +385,8 @@ server <- function(input, output, session) {
     req(df)
     cls <- class_col_detect(df)
     validate(need(!is.null(cls), "V datech chybí sloupec 'Do jaké třídy chodíte?'."))
-    classes <- sort(unique(na.omit(as.character(df[[cls]]))))
+    
+    classes <- sort(unique(na.omit(trimws(as.character(df[[cls]])))))
     checkboxGroupInput("classes", "Z jakých tříd chceš data?", choices = classes, selected = classes)
   })
 
@@ -373,7 +396,9 @@ server <- function(input, output, session) {
     cls <- class_col_detect(df)
     req(cls)
     req(input$classes)
-    keep <- as.character(df[[cls]]) %in% input$classes
+    
+    class_vec <- trimws(as.character(df[[cls]]))
+    keep <- class_vec %in% trimws(input$classes)
     df[keep %in% TRUE, , drop = FALSE]
   })
 
@@ -382,11 +407,39 @@ server <- function(input, output, session) {
     req(df)
     question_choices_grouped(df)
   })
-
+  
   observe({
     groups <- question_groups()
-    updatePickerInput(session, "questions", choices = groups)
+    req(groups)
+    predmety <- names(groups)
+    
+    selected_subject <- isolate(input$subject_filter)
+    if (is.null(selected_subject) || !selected_subject %in% c("Vše", predmety)) {
+      selected_subject <- "Vše"
+    }
+    
+    updateSelectInput(
+      session,
+      "subject_filter",
+      choices = c("Vše", predmety),
+      selected = selected_subject
+    )
   })
+  
+  observe({
+    groups <- question_groups()
+    req(groups)
+    
+    shown_groups <- groups
+    if (!is.null(input$subject_filter) && input$subject_filter != "Vše") {
+      shown_groups <- groups[names(groups) %in% input$subject_filter]
+    }
+    
+    current <- isolate(input$questions)
+    valid_selected <- intersect(current, unlist(shown_groups, use.names = FALSE))
+    updatePickerInput(session, "questions", choices = shown_groups, selected = valid_selected)
+  })
+  
 
   question_info <- reactive({
     df <- filtered_df()
@@ -435,32 +488,24 @@ server <- function(input, output, session) {
   })
 
   # Histogramy / categorical bars
-  output$hist_grid_ui <- renderUI({
-    df <- filtered_df()
-    qi <- question_info()
-    req(df)
-
-    n_panels <- length(qi)
-    h <- max(500, 260 * ceiling(n_panels / 2))
-    plotOutput("hist_grid", height = paste0(h, "px"))
-  })
-
   output$hist_grid <- renderPlot({
     df <- filtered_df()
     qi <- question_info()
     lt <- legend_lookup()
     req(df)
     validate(need(length(qi) > 0, "Vyber otázky."))
-
+    
     facet_class <- isTRUE(input$facet_by_class)
     class_col <- class_col_detect(df)
     top_n <- input$top_n
-
+    class_levels <- if (facet_class) input$classes else "ALL"
+    
     num_qs <- names(qi)[vapply(qi, function(z) z$type == "numeric", logical(1))]
     cat_qs <- names(qi)[vapply(qi, function(z) z$type == "categorical", logical(1))]
-
+    
     d_scale <- tibble()
     stat_scale <- tibble()
+    
     if (length(num_qs) > 0) {
       d_scale <- bind_rows(lapply(num_qs, function(q) {
         x <- qi[[q]]$x_num
@@ -469,17 +514,21 @@ server <- function(input, output, session) {
         }
         tibble(
           question = q,
-          class = if (facet_class) as.character(df[[class_col]]) else "ALL",
-          value = factor(x, levels = sort(unique(stats::na.omit(x))))
+          class = if (facet_class) trimws(as.character(df[[class_col]])) else "ALL",
+          value = x
         )
       })) %>%
         filter(!is.na(value)) %>%
+        mutate(
+          class = factor(class, levels = class_levels),
+          value = factor(value, levels = sort(unique(value)))
+        ) %>%
         count(question, class, value, name = "n") %>%
         group_by(question, class) %>%
         mutate(p = 100 * n / sum(n)) %>%
         ungroup() %>%
         mutate(type = "Numerické")
-
+      
       stat_scale <- bind_rows(lapply(num_qs, function(q) {
         x <- qi[[q]]$x_num
         if (qi[[q]]$is_scale && !is.null(input$invert_questions) && q %in% input$invert_questions) {
@@ -487,22 +536,27 @@ server <- function(input, output, session) {
         }
         tmp <- tibble(
           question = q,
-          class = if (facet_class) as.character(df[[class_col]]) else "ALL",
+          class = if (facet_class) trimws(as.character(df[[class_col]])) else "ALL",
           value = x
         )
-        tmp %>% group_by(question, class) %>% summarise(
-          n = sum(!is.na(value)),
-          mean = mean(value, na.rm = TRUE),
-          sd = sd(value, na.rm = TRUE),
-          .groups = "drop"
-        )
+        tmp %>%
+          filter(!is.na(value)) %>%
+          group_by(question, class) %>%
+          summarise(
+            n = sum(!is.na(value)),
+            mean = mean(value, na.rm = TRUE),
+            sd = sd(value, na.rm = TRUE),
+            .groups = "drop"
+          )
       })) %>%
         mutate(
+          class = factor(class, levels = class_levels),
           label = paste0("n=", n, "\nmean=", signif(mean, 3), "\nsd=", signif(sd, 3)),
-          legend = map_chr(question, ~coalesce(legend_text_for_question(.x, lt), ""))
+          legend = map_chr(question, ~coalesce(legend_text_for_question(.x, lt), "")),
+          panel = clean_question_label(question)
         )
     }
-
+    
     d_cat <- tibble()
     if (length(cat_qs) > 0) {
       d_cat <- bind_rows(lapply(cat_qs, function(q) {
@@ -511,70 +565,88 @@ server <- function(input, output, session) {
         x <- fct_lump_n(factor(x), n = top_n, other_level = "Other")
         tibble(
           question = q,
-          class = if (facet_class) as.character(df[[class_col]]) else "ALL",
+          class = if (facet_class) trimws(as.character(df[[class_col]])) else "ALL",
           value = x
         )
       })) %>%
+        mutate(class = factor(class, levels = class_levels)) %>%
         count(question, class, value, name = "n") %>%
         group_by(question, class) %>%
         mutate(p = 100 * n / sum(n)) %>%
         ungroup() %>%
         mutate(type = "Kategorické")
     }
-
+    
     d_all <- bind_rows(d_scale, d_cat)
     validate(need(nrow(d_all) > 0, "Není co vykreslit."))
-
+    
     d_all <- d_all %>%
-      mutate(
-        panel = if (facet_class) paste0(class, " | ", clean_question_label(question)) else clean_question_label(question)
-      )
-
-    stat_scale <- stat_scale %>%
-      mutate(panel = if (facet_class) paste0(class, " | ", clean_question_label(question)) else clean_question_label(question))
-
-    ggplot(d_all, aes(x = value, y = n)) +
-      geom_col() +
-      geom_text(aes(label = sprintf("%.1f%%", p)), vjust = -0.2, size = 3) +
-      geom_text(
-        data = stat_scale,
-        aes(x = Inf, y = Inf, label = paste(label, legend, sep = "\n")),
-        inherit.aes = FALSE,
-        hjust = 1.05, vjust = 1.1,
-        size = 3
-      ) +
-      facet_wrap(type ~ panel, scales = "free_y", ncol = 2) +
+      mutate(panel = clean_question_label(question))
+    
+    p <- ggplot(d_all, aes(x = value, y = n)) +
       labs(x = NULL, y = "Absolutní četnost") +
+      theme_minimal(base_size = 12) +
       theme(
-        strip.text = element_text(size = 9),
+        strip.text = element_text(size = 10, face = "bold", colour = "#23314d"),
         axis.text.x = element_text(angle = 45, hjust = 1),
-        plot.margin = margin(10, 20, 10, 10)
+        plot.margin = margin(10, 20, 10, 10),
+        panel.grid.minor = element_blank(),
+        legend.position = if (facet_class) "top" else "none"
       )
+    
+    if (facet_class) {
+      p <- p +
+        geom_col(aes(fill = class), position = position_dodge(width = 0.85), width = 0.75) +
+        geom_text(
+          aes(label = sprintf("%.1f%%", p), group = class),
+          position = position_dodge(width = 0.85),
+          vjust = -0.2,
+          size = 3
+        )
+    } else {
+      p <- p +
+        geom_col(width = 0.75) +
+        geom_text(aes(label = sprintf("%.1f%%", p)), vjust = -0.2, size = 3)
+    }
+    
+    if (nrow(stat_scale) > 0) {
+      p <- p +
+        geom_text(
+          data = stat_scale,
+          aes(x = Inf, y = Inf, label = paste(label, legend, sep = "\n")),
+          inherit.aes = FALSE,
+          hjust = 1.05, vjust = 1.1,
+          size = 3
+        )
+    }
+    
+    p + facet_wrap(type ~ panel, scales = "free_y", ncol = 2)
   })
 
-  output$box_all_ui <- renderUI({
-    df <- filtered_df()
-    qi <- question_info()
-    req(df)
-    num_q <- sum(vapply(qi, function(z) z$type == "numeric", logical(1)))
-    if (num_q == 0) return(plotOutput("box_all", height = "300px"))
-    k <- if (isTRUE(input$facet_by_class)) length(unique(df[[class_col_detect(df)]])) else 1
-    h <- max(650, 120 * num_q * k)
-    plotOutput("box_all", height = paste0(h, "px"))
-  })
+
+  
   
   observe({
     df <- dat()
     req(df)
-    
     groups <- question_choices_grouped(df)
-    predmety <- names(groups)
+    all_q <- unlist(groups, use.names = FALSE)
     
-    updateSelectInput(
+    current_corr <- isolate(input$vars_corr)
+    if (is.null(current_corr)) current_corr <- character(0)
+    
+    updatePickerInput(
       session,
-      "subject_filter",
-      choices = c("Vše", predmety),
-      selected = "Vše"
+      "vars_corr",
+      choices = groups,
+      selected = intersect(current_corr, all_q)
+    )
+    
+    updatePickerInput(
+      session,
+      "vars_stats",
+      choices = groups,
+      selected = all_q
     )
   })
   
@@ -583,29 +655,31 @@ server <- function(input, output, session) {
     qi <- question_info()
     lt <- legend_lookup()
     req(df)
-
+    
     qs <- names(qi)
     num_qs <- qs[vapply(qi, function(z) z$type == "numeric", logical(1))]
     validate(need(length(num_qs) > 0, "Vyber aspoň jednu numerickou otázku."))
-
+    
     facet_class <- isTRUE(input$facet_by_class)
     class_col <- class_col_detect(df)
-
+    
     dlong <- bind_rows(lapply(num_qs, function(q) {
       x <- qi[[q]]$x_num
       if (qi[[q]]$is_scale && !is.null(input$invert_questions) && q %in% input$invert_questions) {
         x <- invert_1_5(x)
       }
+      
       tibble(
         question = clean_question_label(q),
         original_question = q,
         value = x,
-        class = if (facet_class) as.character(df[[class_col]]) else "ALL"
+        class = if (facet_class) trimws(as.character(df[[class_col]])) else "ALL"
       )
-    })) %>% filter(!is.na(value))
-
+    })) %>%
+      filter(!is.na(value))
+    
     validate(need(nrow(dlong) > 1, "Málo dat pro boxplot."))
-
+    
     box_stats <- dlong %>%
       group_by(question, class) %>%
       summarise(
@@ -616,7 +690,7 @@ server <- function(input, output, session) {
         .groups = "drop"
       ) %>%
       mutate(label = paste0("n=", n, "  mean=", signif(mean, 3), "  sd=", signif(sd, 3)))
-
+    
     cap_lines <- lapply(num_qs, function(q) {
       txt <- legend_text_for_question(q, lt)
       if (is.na(txt)) return(NULL)
@@ -624,62 +698,63 @@ server <- function(input, output, session) {
     })
     cap_lines <- Filter(Negate(is.null), cap_lines)
     cap <- if (length(cap_lines) == 0) NULL else paste(cap_lines, collapse = "\n")
-
-    p <- ggplot(dlong, aes(x = question, y = value)) +
-      geom_boxplot() +
-      stat_summary(fun = mean, geom = "point", size = 2) +
-      stat_summary(fun.data = function(x) {
-        m <- mean(x, na.rm = TRUE); s <- sd(x, na.rm = TRUE)
-        data.frame(y = m, ymin = m - s, ymax = m + s)
-      }, geom = "errorbar", width = 0.15) +
+    
+    if (facet_class) {
+      p <- ggplot(dlong, aes(x = question, y = value, fill = class)) +
+        geom_boxplot(position = position_dodge(width = 0.8), width = 0.7, outlier.alpha = 0.5) +
+        stat_summary(
+          aes(group = class),
+          fun = mean,
+          geom = "point",
+          position = position_dodge(width = 0.8),
+          size = 2
+        )
+    } else {
+      p <- ggplot(dlong, aes(x = question, y = value)) +
+        geom_boxplot(fill = "#cfe0ff", colour = "#355070", outlier.alpha = 0.5) +
+        stat_summary(fun = mean, geom = "point", size = 2.2, colour = "#d94841")
+    }
+    
+    p <- p +
       geom_text(
         data = box_stats,
-        aes(x = question, y = ymax, label = label),
+        aes(x = question, y = ymax, label = label, group = class),
         inherit.aes = FALSE,
+        position = if (facet_class) position_dodge(width = 0.8) else position_identity(),
         vjust = -0.6,
         size = 3
       ) +
       coord_cartesian(clip = "off") +
-      labs(x = NULL, y = "Hodnota", title = "Boxploty + mean + sd", caption = cap) +
+      labs(
+        x = NULL,
+        y = "Hodnota",
+        title = "Boxploty + mean + sd",
+        caption = cap
+      ) +
+      theme_minimal(base_size = 12) +
       theme(
         axis.text.x = element_text(angle = 35, hjust = 1),
         plot.caption = element_text(hjust = 0),
-        plot.margin = margin(10, 10, 20, 10)
+        plot.margin = margin(10, 10, 20, 10),
+        panel.grid.minor = element_blank(),
+        legend.position = if (facet_class) "top" else "none"
       )
-
-    if (facet_class) p <- p + facet_wrap(~ class, scales = "free_y")
+    
     p
   })
 
-  output$legend_edit_dt <- renderDT({
-    lo <- legend_override()
+  output$legend_dt <- renderDT({
+    lo <- legend_lookup()
     validate(need(!is.null(lo), "Legenda není načtená."))
-    
-    view <- lo[, c("question", "label_1", "label_5"), drop = FALSE]
-    
-    datatable(
-      view,
-      editable = list(target = "cell", disable = list(columns = c(0))),
-      options = list(pageLength = 20, scrollX = TRUE),
-      rownames = FALSE
-    )
+    view <- lo %>%
+      transmute(
+        question = clean_question_label(question),
+        label_1 = label_1_display,
+        label_5 = label_5_display
+      )
+    datatable(view, options = list(pageLength = 20, scrollX = TRUE), rownames = FALSE)
   })
 
-  observeEvent(input$legend_edit_dt_cell_edit, {
-    info <- input$legend_edit_dt_cell_edit
-    lo <- legend_override()
-    req(lo)
-    
-    i <- info$row
-    j <- info$col
-    v <- as.character(info$value)
-    
-    # v DT: 0 = question, 1 = label_1, 2 = label_5
-    if (j == 1) lo$label_1[i] <- v
-    if (j == 2) lo$label_5[i] <- v
-    
-    legend_override(lo)
-  })
 
   output$open_ui <- renderUI({
     qi <- question_info()
@@ -732,16 +807,7 @@ server <- function(input, output, session) {
     nd
   })
 
-  observe({
-    df <- dat()
-    req(df)
-    groups <- question_choices_grouped(df)
-    
-    all_q <- unlist(groups, use.names = FALSE)
-    
-    updatePickerInput(session, "vars_corr", choices = groups)
-    updatePickerInput(session, "vars_stats", choices = groups, selected = all_q)
-  })
+  
 
   corr_mat <- reactive({
     nd <- numeric_df_corr()
