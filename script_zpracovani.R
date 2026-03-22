@@ -1,4 +1,4 @@
-
+library(dplyr)
 setwd("C:/Users/N/Documents/Desktop/zatez_alt")
 
 # Načtení dat
@@ -47,6 +47,30 @@ for (i in 1:nrow(data_spojena)) {
     print(data_spojena$Do.jaké.třídy.chodíte.[i])
   }
 }
+
+
+colnames(data_final)
+colnames(data_final)[c(8:19)] <- paste0(colnames(data_final)[c(8:19)], " (SAK)")
+colnames(data_final)[c(20:31)] <- paste0(colnames(data_final)[c(20:31)], " (PIV)")
+colnames(data_final)[c(32:40)] <- paste0(colnames(data_final)[c(32:40)], " (MATEMATIKA)")
+colnames(data_final)[c(41:50)] <- paste0(colnames(data_final)[c(41:50)], " (ANGLIČTINA)")
+colnames(data_final)[c(51:59)] <- paste0(colnames(data_final)[c(51:59)], " (ČEŠTINA A KOMUNIKACE)")
+colnames(data_final)[c(60:68)] <- paste0(colnames(data_final)[c(60:68)], " (DRUHÝ CIZÍ JAZYK)")
+colnames(data_final)[c(69:77)] <- paste0(colnames(data_final)[c(69:77)], " (OSV)")
+colnames(data_final)[c(78:86)] <- paste0(colnames(data_final)[c(78:86)], " (TVORBA)")
+colnames(data_final)[c(89:94)] <- paste0(colnames(data_final)[c(89:94)], " (IKT)")
+colnames(data_final)[c(96:101)] <- paste0(colnames(data_final)[c(96:101)], " (LITERATURA A UMĚNÍ)")
+
+colnames(data_final)
+View(data_final)
+
+data_fin <- data_final %>% select(-c(1, 2, 87))
+write.csv(data_fin, file = "data_pretizeni.csv")
+write.csv(data_fin[c(1:50),], file = "data_pretizenik.csv")
+
+
+
+
 
 
 
