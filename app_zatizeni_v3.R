@@ -236,12 +236,121 @@ question_choices_grouped <- function(df) {
   split(qs, extract_subject(qs))
 }
 
+find_pdf_browser <- function() {
+  candidates <- c(
+    Sys.getenv("CHROME_BIN"),
+    Sys.which("chrome"),
+    Sys.which("chrome.exe"),
+    Sys.which("google-chrome"),
+    Sys.which("msedge"),
+    Sys.which("msedge.exe"),
+    file.path(Sys.getenv("PROGRAMFILES"), "Google/Chrome/Application/chrome.exe"),
+    file.path(Sys.getenv("PROGRAMFILES(X86)"), "Google/Chrome/Application/chrome.exe"),
+    file.path(Sys.getenv("LOCALAPPDATA"), "Google/Chrome/Application/chrome.exe"),
+    file.path(Sys.getenv("PROGRAMFILES"), "Microsoft/Edge/Application/msedge.exe"),
+    file.path(Sys.getenv("PROGRAMFILES(X86)"), "Microsoft/Edge/Application/msedge.exe")
+  )
+  
+  candidates <- unique(candidates[nzchar(candidates)])
+  candidates <- candidates[file.exists(candidates)]
+  
+  if (length(candidates) == 0) {
+    stop(
+      "Nepodařilo se najít Google Chrome ani Microsoft Edge. ",
+      "Pro PDF export musí být nainstalovaný Chrome nebo Edge."
+    )
+  }
+  
+  normalizePath(candidates[1], winslash = "/", mustWork = TRUE)
+}
+
+
+path_for_chrome <- function(path, mustWork = TRUE) {
+  p <- normalizePath(path, winslash = "/", mustWork = mustWork)
+  
+  if (.Platform$OS.type == "windows" && file.exists(p)) {
+    p <- utils::shortPathName(p)
+    p <- gsub("\\\\", "/", p)
+  }
+  
+  p
+}
+
+
+chrome_html_to_pdf <- function(html_path,
+                               pdf_path,
+                               wait_seconds = 2,
+                               timeout = 90) {
+  browser <- find_pdf_browser()
+  
+  html_abs <- path_for_chrome(html_path, mustWork = TRUE)
+  
+  pdf_dir <- path_for_chrome(dirname(pdf_path), mustWork = TRUE)
+  pdf_abs <- file.path(pdf_dir, basename(pdf_path))
+  pdf_abs <- gsub("\\\\", "/", pdf_abs)
+  
+  if (file.exists(pdf_abs)) {
+    unlink(pdf_abs, force = TRUE)
+  }
+  
+  profile_dir <- file.path(
+    tempdir(),
+    paste0("chrome_pdf_profile_", Sys.getpid(), "_", sample.int(1e6, 1))
+  )
+  dir.create(profile_dir, recursive = TRUE, showWarnings = FALSE)
+  profile_dir <- path_for_chrome(profile_dir, mustWork = TRUE)
+  
+  html_url <- paste0("file:///", html_abs)
+  
+  args <- c(
+    "--headless=new",
+    "--disable-gpu",
+    "--no-sandbox",
+    "--disable-dev-shm-usage",
+    "--run-all-compositor-stages-before-draw",
+    paste0("--user-data-dir=", profile_dir),
+    paste0("--virtual-time-budget=", wait_seconds * 1000),
+    paste0("--print-to-pdf=", pdf_abs),
+    "--print-to-pdf-no-header",
+    html_url
+  )
+  
+  res <- tryCatch(
+    system2(
+      command = browser,
+      args = args,
+      stdout = TRUE,
+      stderr = TRUE,
+      wait = TRUE,
+      timeout = timeout
+    ),
+    error = function(e) {
+      stop(
+        "Chrome/Edge PDF export selhal už při spuštění.\n\n",
+        "Prohlížeč: ", browser, "\n\n",
+        "Chyba:\n", conditionMessage(e)
+      )
+    }
+  )
+  
+  if (!file.exists(pdf_abs) || is.na(file.info(pdf_abs)$size) || file.info(pdf_abs)$size == 0) {
+    stop(
+      "Chrome/Edge nevytvořil PDF soubor.\n\n",
+      "Prohlížeč: ", browser, "\n\n",
+      "HTML vstup: ", html_abs, "\n",
+      "PDF výstup: ", pdf_abs, "\n\n",
+      "Výstup z prohlížeče:\n",
+      paste(res, collapse = "\n")
+    )
+  }
+  
+  invisible(pdf_abs)
+}
+
+
+
 check_plot_export_pkgs <- function(format) {
   pkgs <- c("rmarkdown", "knitr", "ggplot2")
-  
-  if (identical(format, "pdf")) {
-    pkgs <- c(pkgs, "pagedown")
-  }
   
   missing <- pkgs[
     !vapply(pkgs, requireNamespace, quietly = TRUE, FUN.VALUE = logical(1))
@@ -264,10 +373,6 @@ export_ggplot_report <- function(plot_obj,
   format <- match.arg(format)
   
   pkgs <- c("rmarkdown", "knitr", "ggplot2")
-  
-  if (identical(format, "pdf")) {
-    pkgs <- c(pkgs, "pagedown")
-  }
   
   failed <- character(0)
   messages <- character(0)
@@ -367,12 +472,11 @@ export_ggplot_report <- function(plot_obj,
   
   if (identical(format, "pdf")) {
     
-    pagedown::chrome_print(
-      input = normalizePath(html_path, winslash = "/", mustWork = TRUE),
-      output = normalizePath(pdf_path, winslash = "/", mustWork = FALSE),
-      wait = 2,
-      timeout = 90,
-      extra_args = c("--disable-gpu", "--no-sandbox")
+    chrome_html_to_pdf(
+      html_path = html_path,
+      pdf_path = pdf_path,
+      wait_seconds = 2,
+      timeout = 90
     )
     
     file.copy(pdf_path, file, overwrite = TRUE)
@@ -573,10 +677,6 @@ check_forms_preview_export_pkgs <- function(format) {
     "rmarkdown", "knitr", "ggplot2",
     "dplyr", "tidyr", "forcats", "stringr", "htmltools"
   )
-  
-  if (identical(format, "pdf")) {
-    pkgs <- c(pkgs, "pagedown")
-  }
   
   failed <- character(0)
   messages <- character(0)
@@ -786,12 +886,11 @@ export_forms_preview_report <- function(items,
   
   if (identical(format, "pdf")) {
     
-    pagedown::chrome_print(
-      input = normalizePath(html_path, winslash = "/", mustWork = TRUE),
-      output = normalizePath(pdf_path, winslash = "/", mustWork = FALSE),
-      wait = 2,
-      timeout = 90,
-      extra_args = c("--disable-gpu", "--no-sandbox")
+    chrome_html_to_pdf(
+      html_path = html_path,
+      pdf_path = pdf_path,
+      wait_seconds = 3,
+      timeout = 120
     )
     
     file.copy(pdf_path, file, overwrite = TRUE)
