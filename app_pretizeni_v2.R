@@ -221,7 +221,45 @@ export_ggplot_report <- function(plot_obj,
                                  subtitle = "",
                                  format = c("html", "pdf")) {
   format <- match.arg(format)
-  check_plot_export_pkgs(format)
+  check_plot_export_pkgs <- function(format) {
+    pkgs <- c("rmarkdown", "knitr", "ggplot2")
+    
+    if (identical(format, "pdf")) {
+      pkgs <- c(pkgs, "webshot2")
+    }
+    
+    failed <- character(0)
+    messages <- character(0)
+    
+    for (pkg in pkgs) {
+      ok <- tryCatch(
+        {
+          loadNamespace(pkg)
+          TRUE
+        },
+        error = function(e) {
+          failed <<- c(failed, pkg)
+          messages <<- c(messages, paste0(pkg, ": ", conditionMessage(e)))
+          FALSE
+        }
+      )
+    }
+    
+    if (length(failed) > 0) {
+      stop(
+        "Pro export nejdou načíst tyto balíčky: ",
+        paste(failed, collapse = ", "),
+        "\n\nSkutečný důvod:\n",
+        paste(messages, collapse = "\n"),
+        "\n\nZkus je přeinstalovat v aktuální R session přes:\n",
+        "install.packages(c(",
+        paste(shQuote(unique(failed)), collapse = ", "),
+        "), dependencies = TRUE)"
+      )
+    }
+    
+    invisible(TRUE)
+  }
   
   subtitle <- if (is.null(subtitle)) "" else as.character(subtitle)
   
@@ -313,7 +351,413 @@ export_ggplot_report <- function(plot_obj,
   }
 }
 
+prepare_forms_preview_items <- function(qi,
+                                        invert_questions = character(),
+                                        top_n = 10,
+                                        lt = NULL) {
+  if (is.null(invert_questions)) invert_questions <- character()
+  
+  out <- lapply(names(qi), function(q) {
+    z <- qi[[q]]
+    q_clean <- clean_question_label(q)
+    legend_txt <- legend_text_for_question(q, lt)
+    if (is.na(legend_txt)) legend_txt <- ""
+    
+    if (identical(z$type, "open")) {
+      ans <- str_trim(as.character(z$x_chr))
+      ans <- ans[!is.na(ans) & ans != ""]
+      
+      return(list(
+        type = "open",
+        question = q_clean,
+        original_question = q,
+        answers = ans,
+        total = length(ans),
+        legend = legend_txt
+      ))
+    }
+    
+    if (identical(z$type, "numeric")) {
+      x <- z$x_num
+      
+      if (isTRUE(z$is_scale) && q %in% invert_questions) {
+        x <- invert_1_5(x)
+      }
+      
+      x <- x[!is.na(x)]
+      
+      if (length(x) == 0) {
+        d <- tibble(
+          value = factor(character()),
+          n = integer(),
+          pct = numeric(),
+          pct_label = character()
+        )
+      } else {
+        if (isTRUE(z$is_scale)) {
+          value_levels <- as.character(1:5)
+        } else {
+          value_levels <- as.character(sort(unique(x)))
+        }
+        
+        d_count <- tibble(
+          value = factor(as.character(x), levels = value_levels)
+        ) %>%
+          count(value, name = "n")
+        
+        d <- tibble(
+          value = factor(value_levels, levels = value_levels)
+        ) %>%
+          left_join(d_count, by = "value") %>%
+          mutate(
+            n = coalesce(n, 0L),
+            pct = ifelse(sum(n) > 0, 100 * n / sum(n), 0),
+            pct_label = ifelse(n > 0, sprintf("%.1f%%", pct), "")
+          )
+      }
+      
+      return(list(
+        type = "scale",
+        question = q_clean,
+        original_question = q,
+        data = d,
+        total = sum(d$n),
+        is_scale = isTRUE(z$is_scale),
+        legend = legend_txt
+      ))
+    }
+    
+    x <- str_trim(as.character(z$x_chr))
+    x[is.na(x) | x == ""] <- "(missing)"
+    x <- forcats::fct_lump_n(factor(x), n = top_n, other_level = "Other")
+    
+    d <- tibble(value = x) %>%
+      count(value, name = "n") %>%
+      arrange(desc(n)) %>%
+      mutate(
+        value = as.character(value),
+        pct = ifelse(sum(n) > 0, 100 * n / sum(n), 0),
+        pct_label = ifelse(pct >= 4, sprintf("%.1f%%", pct), "")
+      )
+    
+    list(
+      type = "categorical",
+      question = q_clean,
+      original_question = q,
+      data = d,
+      total = sum(d$n),
+      legend = legend_txt
+    )
+  })
+  
+  names(out) <- names(qi)
+  out
+}
 
+
+forms_preview_plot <- function(item) {
+  caption_txt <- item$legend
+  if (is.null(caption_txt) || !nzchar(caption_txt)) caption_txt <- NULL
+  
+  if (identical(item$type, "scale")) {
+    ymax <- max(item$data$n, na.rm = TRUE)
+    if (!is.finite(ymax) || ymax <= 0) ymax <- 1
+    
+    return(
+      ggplot(item$data, aes(x = value, y = n)) +
+        geom_col(width = 0.75, fill = "#3b82f6") +
+        geom_text(
+          aes(label = pct_label),
+          vjust = -0.25,
+          size = 4
+        ) +
+        coord_cartesian(ylim = c(0, ymax * 1.18), clip = "off") +
+        labs(
+          title = item$question,
+          subtitle = paste0("Počet odpovědí: ", item$total),
+          caption = caption_txt,
+          x = NULL,
+          y = "Absolutní četnost"
+        ) +
+        theme_minimal(base_size = 13) +
+        theme(
+          plot.title = element_text(face = "bold", colour = "#23314d"),
+          plot.caption = element_text(hjust = 0, colour = "#5b657a"),
+          panel.grid.minor = element_blank(),
+          plot.margin = margin(10, 20, 25, 10)
+        )
+    )
+  }
+  
+  if (identical(item$type, "categorical")) {
+    d <- item$data %>%
+      mutate(
+        value = factor(value, levels = value)
+      )
+    
+    return(
+      ggplot(d, aes(x = "", y = n, fill = value)) +
+        geom_col(width = 1, colour = "white") +
+        coord_polar(theta = "y") +
+        geom_text(
+          aes(label = pct_label),
+          position = position_stack(vjust = 0.5),
+          size = 4
+        ) +
+        labs(
+          title = item$question,
+          subtitle = paste0("Počet odpovědí: ", item$total),
+          caption = caption_txt,
+          fill = NULL
+        ) +
+        theme_void(base_size = 13) +
+        theme(
+          plot.title = element_text(face = "bold", colour = "#23314d"),
+          plot.caption = element_text(hjust = 0, colour = "#5b657a"),
+          legend.position = "right",
+          plot.margin = margin(10, 10, 25, 10)
+        )
+    )
+  }
+  
+  NULL
+}
+
+
+check_forms_preview_export_pkgs <- function(format) {
+  pkgs <- c(
+    "rmarkdown", "knitr", "ggplot2",
+    "dplyr", "tidyr", "forcats", "stringr", "htmltools"
+  )
+  
+  if (identical(format, "pdf")) {
+    pkgs <- c(pkgs, "webshot2")
+  }
+  
+  failed <- character(0)
+  messages <- character(0)
+  
+  for (pkg in pkgs) {
+    tryCatch(
+      {
+        loadNamespace(pkg)
+        TRUE
+      },
+      error = function(e) {
+        failed <<- c(failed, pkg)
+        messages <<- c(messages, paste0(pkg, ": ", conditionMessage(e)))
+        FALSE
+      }
+    )
+  }
+  
+  if (length(failed) > 0) {
+    stop(
+      "Pro export nejdou načíst tyto balíčky: ",
+      paste(failed, collapse = ", "),
+      "\n\nSkutečný důvod:\n",
+      paste(messages, collapse = "\n")
+    )
+  }
+  
+  invisible(TRUE)
+}
+
+
+export_forms_preview_report <- function(items,
+                                        file,
+                                        title = "Náhled odpovědí",
+                                        subtitle = "",
+                                        format = c("html", "pdf")) {
+  format <- match.arg(format)
+  check_forms_preview_export_pkgs(format)
+  
+  subtitle <- if (is.null(subtitle)) "" else as.character(subtitle)
+  
+  workdir <- file.path(
+    tempdir(),
+    paste0("forms_preview_", as.integer(Sys.time()), "_", sample.int(1e6, 1))
+  )
+  dir.create(workdir, recursive = TRUE, showWarnings = FALSE)
+  
+  items_path <- file.path(workdir, "items.rds")
+  saveRDS(items, items_path)
+  
+  rmd_path <- file.path(workdir, "forms_preview_report.Rmd")
+  html_path <- file.path(workdir, "report.html")
+  pdf_path  <- file.path(workdir, "report.pdf")
+  
+  writeLines(
+    c(
+      "---",
+      "title: \"Náhled odpovědí\"",
+      "output:",
+      "  html_document:",
+      "    self_contained: true",
+      "    toc: false",
+      "params:",
+      "  title: NULL",
+      "  subtitle: NULL",
+      "  items_path: NULL",
+      "---",
+      "",
+      "```{r setup, include=FALSE}",
+      "library(ggplot2)",
+      "library(dplyr)",
+      "library(tidyr)",
+      "library(forcats)",
+      "library(stringr)",
+      "library(htmltools)",
+      "knitr::opts_chunk$set(",
+      "  echo = FALSE,",
+      "  message = FALSE,",
+      "  warning = FALSE,",
+      "  fig.width = 10,",
+      "  fig.height = 6",
+      ")",
+      "```",
+      "",
+      "<style>",
+      "body { font-family: Arial, sans-serif; }",
+      ".question-card { border: 1px solid #e3e8f2; border-radius: 14px; padding: 18px; margin-bottom: 26px; box-shadow: 0 4px 14px rgba(31,60,136,0.06); }",
+      ".open-answer { padding: 8px 10px; margin-bottom: 8px; background: #f6f8fb; border-radius: 8px; }",
+      ".meta { color: #5b657a; font-size: 0.95em; }",
+      "</style>",
+      "",
+      "```{r functions, include=FALSE}",
+      "forms_preview_plot <- function(item) {",
+      "  caption_txt <- item$legend",
+      "  if (is.null(caption_txt) || !nzchar(caption_txt)) caption_txt <- NULL",
+      "",
+      "  if (identical(item$type, 'scale')) {",
+      "    ymax <- max(item$data$n, na.rm = TRUE)",
+      "    if (!is.finite(ymax) || ymax <= 0) ymax <- 1",
+      "    return(",
+      "      ggplot(item$data, aes(x = value, y = n)) +",
+      "        geom_col(width = 0.75, fill = '#3b82f6') +",
+      "        geom_text(",
+      "          aes(label = pct_label),",
+      "          vjust = -0.25,",
+      "          size = 4",
+      "        ) +",
+      "        coord_cartesian(ylim = c(0, ymax * 1.18), clip = 'off') +",
+      "        labs(",
+      "          title = item$question,",
+      "          subtitle = paste0('Počet odpovědí: ', item$total),",
+      "          caption = caption_txt,",
+      "          x = NULL,",
+      "          y = 'Absolutní četnost'",
+      "        ) +",
+      "        theme_minimal(base_size = 13) +",
+      "        theme(",
+      "          plot.title = element_text(face = 'bold', colour = '#23314d'),",
+      "          plot.caption = element_text(hjust = 0, colour = '#5b657a'),",
+      "          panel.grid.minor = element_blank(),",
+      "          plot.margin = margin(10, 20, 25, 10)",
+      "        )",
+      "    )",
+      "  }",
+      "",
+      "  if (identical(item$type, 'categorical')) {",
+      "    d <- item$data %>%",
+      "      mutate(value = factor(value, levels = value))",
+      "",
+      "    return(",
+      "      ggplot(d, aes(x = '', y = n, fill = value)) +",
+      "        geom_col(width = 1, colour = 'white') +",
+      "        coord_polar(theta = 'y') +",
+      "        geom_text(",
+      "          aes(label = pct_label),",
+      "          position = position_stack(vjust = 0.5),",
+      "          size = 4",
+      "        ) +",
+      "        labs(",
+      "          title = item$question,",
+      "          subtitle = paste0('Počet odpovědí: ', item$total),",
+      "          caption = caption_txt,",
+      "          fill = NULL",
+      "        ) +",
+      "        theme_void(base_size = 13) +",
+      "        theme(",
+      "          plot.title = element_text(face = 'bold', colour = '#23314d'),",
+      "          plot.caption = element_text(hjust = 0, colour = '#5b657a'),",
+      "          legend.position = 'right',",
+      "          plot.margin = margin(10, 10, 25, 10)",
+      "        )",
+      "    )",
+      "  }",
+      "",
+      "  NULL",
+      "}",
+      "```",
+      "",
+      "```{r title, results='asis'}",
+      "cat('# ', params$title, '\\n\\n', sep = '')",
+      "if (!is.null(params$subtitle) && nzchar(params$subtitle)) {",
+      "  cat('<p class=\"meta\">', params$subtitle, '</p>\\n\\n', sep = '')",
+      "}",
+      "```",
+      "",
+      "```{r preview, results='asis'}",
+      "items <- readRDS(params$items_path)",
+      "",
+      "for (i in seq_along(items)) {",
+      "  item <- items[[i]]",
+      "  cat('<div class=\"question-card\">\\n')",
+      "  if (identical(item$type, 'open')) {",
+      "    cat('<h2>', htmltools::htmlEscape(item$question), '</h2>\\n', sep = '')",
+      "    cat('<p class=\"meta\">Počet textových odpovědí: ', item$total, '</p>\\n', sep = '')",
+      "    if (length(item$answers) == 0) {",
+      "      cat('<p><em>Bez odpovědí.</em></p>\\n')",
+      "    } else {",
+      "      for (ans in item$answers) {",
+      "        cat('<div class=\"open-answer\">', htmltools::htmlEscape(ans), '</div>\\n', sep = '')",
+      "      }",
+      "    }",
+      "  } else {",
+      "    print(forms_preview_plot(item))",
+      "  }",
+      "  cat('</div>\\n\\n')",
+      "}",
+      "```"
+    ),
+    con = rmd_path,
+    useBytes = TRUE
+  )
+  
+  rmarkdown::render(
+    input = rmd_path,
+    output_format = "html_document",
+    output_file = basename(html_path),
+    output_dir = workdir,
+    quiet = TRUE,
+    params = list(
+      title = title,
+      subtitle = subtitle,
+      items_path = items_path
+    ),
+    envir = new.env(parent = globalenv())
+  )
+  
+  if (identical(format, "pdf")) {
+    html_url <- paste0(
+      "file:///",
+      normalizePath(html_path, winslash = "/", mustWork = TRUE)
+    )
+    
+    webshot2::webshot(
+      url = html_url,
+      file = pdf_path,
+      delay = 1,
+      vwidth = 1600,
+      vheight = 1800
+    )
+    
+    file.copy(pdf_path, file, overwrite = TRUE)
+  } else {
+    file.copy(html_path, file, overwrite = TRUE)
+  }
+}
 
 
 # -------------------------
@@ -444,6 +888,27 @@ ui <- fluidPage(
             )
           ),
           plotOutput("box_all", height = "900px")
+        ),
+        tabPanel(
+          "Náhled odpovědí",
+          fluidRow(
+            column(
+              4,
+              selectInput(
+                "forms_preview_export_format",
+                "Formát exportu:",
+                choices = c("HTML" = "html", "PDF" = "pdf"),
+                selected = "html"
+              )
+            ),
+            column(
+              4,
+              br(),
+              downloadButton("forms_preview_download", "Stáhnout náhled odpovědí")
+            )
+          ),
+          tags$hr(),
+          uiOutput("forms_preview_ui")
         ),
         tabPanel("Korelace & regrese",
                  h4("Páry proměnných"),
@@ -644,6 +1109,122 @@ server <- function(input, output, session) {
     )
   })
 
+  forms_preview_items <- reactive({
+    qi <- question_info()
+    lt <- legend_lookup()
+    validate(need(length(qi) > 0, "Vyber otázky vlevo."))
+    
+    inv <- input$invert_questions
+    if (is.null(inv)) inv <- character()
+    
+    prepare_forms_preview_items(
+      qi = qi,
+      invert_questions = inv,
+      top_n = input$top_n,
+      lt = lt
+    )
+  })
+  
+  
+  output$forms_preview_ui <- renderUI({
+    items <- forms_preview_items()
+    validate(need(length(items) > 0, "Vyber otázky vlevo."))
+    
+    tagList(
+      lapply(seq_along(items), function(i) {
+        item <- items[[i]]
+        
+        if (identical(item$type, "open")) {
+          answers_ui <- if (length(item$answers) == 0) {
+            tags$p(tags$em("Bez odpovědí."))
+          } else {
+            tags$div(
+              lapply(item$answers, function(ans) {
+                tags$div(
+                  style = "
+                  padding: 8px 10px;
+                  margin-bottom: 8px;
+                  background: #f6f8fb;
+                  border-radius: 8px;
+                  border: 1px solid #e3e8f2;
+                ",
+                  ans
+                )
+              })
+            )
+          }
+          
+          return(
+            tags$div(
+              class = "well",
+              style = "margin-bottom: 20px;",
+              tags$h4(item$question),
+              tags$p(
+                style = "color: #5b657a;",
+                paste0("Počet textových odpovědí: ", item$total)
+              ),
+              answers_ui
+            )
+          )
+        }
+        
+        plotOutput(
+          outputId = paste0("forms_preview_plot_", i),
+          height = if (identical(item$type, "categorical")) "430px" else "360px"
+        )
+      })
+    )
+  })
+  
+  
+  observe({
+    items <- forms_preview_items()
+    
+    for (i in seq_along(items)) {
+      local({
+        ii <- i
+        item <- items[[ii]]
+        out_id <- paste0("forms_preview_plot_", ii)
+        
+        output[[out_id]] <- renderPlot({
+          req(!identical(item$type, "open"))
+          forms_preview_plot(item)
+        })
+      })
+    }
+  })
+  
+  
+  output$forms_preview_download <- downloadHandler(
+    filename = function() {
+      ext <- input$forms_preview_export_format
+      paste0("nahled-odpovedi-", Sys.Date(), ".", ext)
+    },
+    content = function(file) {
+      items <- forms_preview_items()
+      req(items)
+      
+      selected_classes <- input$classes
+      if (is.null(selected_classes)) selected_classes <- character()
+      
+      subtitle <- paste0(
+        "Vybrané třídy: ",
+        paste(selected_classes, collapse = ", "),
+        "<br>",
+        "Počet vybraných otázek: ",
+        length(items)
+      )
+      
+      export_forms_preview_report(
+        items = items,
+        file = file,
+        title = "Náhled odpovědí",
+        subtitle = subtitle,
+        format = input$forms_preview_export_format
+      )
+    }
+  )
+  
   # Histogramy / categorical bars
   hist_plot <- reactive({
     df <- filtered_df()
