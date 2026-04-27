@@ -8,6 +8,8 @@ library(DT)
 library(shinyWidgets)
 library(tidyr)
 library(purrr)
+library(rmarkdown)
+library(knitr)
 
 
 sanitize_names <- function(nms) {
@@ -193,7 +195,123 @@ question_choices_grouped <- function(df) {
   split(qs, extract_subject(qs))
 }
 
+check_plot_export_pkgs <- function(format) {
+  pkgs <- c("rmarkdown", "knitr", "ggplot2")
+  
+  if (identical(format, "pdf")) {
+    pkgs <- c(pkgs, "webshot2")
+  }
+  
+  missing <- pkgs[
+    !vapply(pkgs, requireNamespace, quietly = TRUE, FUN.VALUE = logical(1))
+  ]
+  
+  if (length(missing) > 0) {
+    stop(
+      "Pro export chybí tyto balíčky: ",
+      paste(missing, collapse = ", "),
+      ". Nainstaluj je přes install.packages(...)."
+    )
+  }
+}
 
+export_ggplot_report <- function(plot_obj,
+                                 file,
+                                 title = "Výstup",
+                                 subtitle = "",
+                                 format = c("html", "pdf")) {
+  format <- match.arg(format)
+  check_plot_export_pkgs(format)
+  
+  subtitle <- if (is.null(subtitle)) "" else as.character(subtitle)
+  
+  workdir <- file.path(
+    tempdir(),
+    paste0("plot_report_", as.integer(Sys.time()), "_", sample.int(1e6, 1))
+  )
+  dir.create(workdir, recursive = TRUE, showWarnings = FALSE)
+  
+  plot_path <- file.path(workdir, "plot.rds")
+  saveRDS(plot_obj, plot_path)
+  
+  rmd_path <- file.path(workdir, "plot_report.Rmd")
+  html_path <- file.path(workdir, "report.html")
+  pdf_path  <- file.path(workdir, "report.pdf")
+  
+  writeLines(
+    c(
+      "---",
+      "title: \"Export grafu\"",
+      "output:",
+      "  html_document:",
+      "    self_contained: true",
+      "    toc: false",
+      "params:",
+      "  title: NULL",
+      "  subtitle: NULL",
+      "  plot_path: NULL",
+      "---",
+      "",
+      "```{r setup, include=FALSE}",
+      "library(ggplot2)",
+      "knitr::opts_chunk$set(",
+      "  echo = FALSE,",
+      "  message = FALSE,",
+      "  warning = FALSE,",
+      "  fig.width = 14,",
+      "  fig.height = 9",
+      ")",
+      "```",
+      "",
+      "```{r nadpis, results='asis'}",
+      "cat('# ', params$title, '\\n\\n', sep = '')",
+      "if (!is.null(params$subtitle) && nzchar(params$subtitle)) {",
+      "  cat(params$subtitle, '\\n\\n')",
+      "}",
+      "```",
+      "",
+      "```{r graf}",
+      "p <- readRDS(params$plot_path)",
+      "print(p)",
+      "```"
+    ),
+    con = rmd_path,
+    useBytes = TRUE
+  )
+  
+  rmarkdown::render(
+    input = rmd_path,
+    output_format = "html_document",
+    output_file = basename(html_path),
+    output_dir = workdir,
+    quiet = TRUE,
+    params = list(
+      title = title,
+      subtitle = subtitle,
+      plot_path = plot_path
+    ),
+    envir = new.env(parent = globalenv())
+  )
+  
+  if (identical(format, "pdf")) {
+    html_url <- paste0(
+      "file:///",
+      normalizePath(html_path, winslash = "/", mustWork = TRUE)
+    )
+    
+    webshot2::webshot(
+      url = html_url,
+      file = pdf_path,
+      delay = 1,
+      vwidth = 1600,
+      vheight = 1100
+    )
+    
+    file.copy(pdf_path, file, overwrite = TRUE)
+  } else {
+    file.copy(html_path, file, overwrite = TRUE)
+  }
+}
 
 
 
@@ -286,8 +404,47 @@ ui <- fluidPage(
     mainPanel(
       width = 9,
       tabsetPanel(
-        tabPanel("Histogramy", plotOutput("hist_grid", height = "900px")),
-        tabPanel("Boxploty", plotOutput("box_all", height = "900px")),
+        tabPanel(
+          "Histogramy",
+          fluidRow(
+            column(
+              4,
+              selectInput(
+                "hist_export_format",
+                "Formát exportu:",
+                choices = c("HTML" = "html", "PDF" = "pdf"),
+                selected = "html"
+              )
+            ),
+            column(
+              4,
+              br(),
+              downloadButton("hist_download", "Stáhnout histogramy")
+            )
+          ),
+          plotOutput("hist_grid", height = "900px")
+        ),
+        
+        tabPanel(
+          "Boxploty",
+          fluidRow(
+            column(
+              4,
+              selectInput(
+                "box_export_format",
+                "Formát exportu:",
+                choices = c("HTML" = "html", "PDF" = "pdf"),
+                selected = "html"
+              )
+            ),
+            column(
+              4,
+              br(),
+              downloadButton("box_download", "Stáhnout boxploty")
+            )
+          ),
+          plotOutput("box_all", height = "900px")
+        ),
         tabPanel("Korelace & regrese",
                  h4("Páry proměnných"),
                  DTOutput("pairs_dt"),
@@ -488,7 +645,7 @@ server <- function(input, output, session) {
   })
 
   # Histogramy / categorical bars
-  output$hist_grid <- renderPlot({
+  hist_plot <- reactive({
     df <- filtered_df()
     qi <- question_info()
     lt <- legend_lookup()
@@ -623,7 +780,36 @@ server <- function(input, output, session) {
     p + facet_wrap(type ~ panel, scales = "free_y", ncol = 2)
   })
 
-
+  output$hist_grid <- renderPlot({
+    req(hist_plot())
+    hist_plot()
+  })
+  
+  output$hist_download <- downloadHandler(
+    filename = function() {
+      ext <- input$hist_export_format
+      paste0("histogramy-", Sys.Date(), ".", ext)
+    },
+    content = function(file) {
+      req(hist_plot())
+      
+      subtitle <- paste0(
+        "Vybrané třídy: ",
+        paste(input$classes, collapse = ", "),
+        "<br>",
+        "Rozdělení podle tříd: ",
+        ifelse(isTRUE(input$facet_by_class), "ano", "ne")
+      )
+      
+      export_ggplot_report(
+        plot_obj = hist_plot(),
+        file = file,
+        title = "Histogramy",
+        subtitle = subtitle,
+        format = input$hist_export_format
+      )
+    }
+  )
   
   
   observe({
@@ -650,7 +836,7 @@ server <- function(input, output, session) {
     )
   })
   
-  output$box_all <- renderPlot({
+  box_plot <- reactive({
     df <- filtered_df()
     qi <- question_info()
     lt <- legend_lookup()
@@ -743,6 +929,37 @@ server <- function(input, output, session) {
     p
   })
 
+  output$box_all <- renderPlot({
+    req(box_plot())
+    box_plot()
+  })
+  
+  output$box_download <- downloadHandler(
+    filename = function() {
+      ext <- input$box_export_format
+      paste0("boxploty-", Sys.Date(), ".", ext)
+    },
+    content = function(file) {
+      req(box_plot())
+      
+      subtitle <- paste0(
+        "Vybrané třídy: ",
+        paste(input$classes, collapse = ", "),
+        "<br>",
+        "Rozdělení podle tříd: ",
+        ifelse(isTRUE(input$facet_by_class), "ano", "ne")
+      )
+      
+      export_ggplot_report(
+        plot_obj = box_plot(),
+        file = file,
+        title = "Boxploty",
+        subtitle = subtitle,
+        format = input$box_export_format
+      )
+    }
+  )
+  
   output$legend_dt <- renderDT({
     lo <- legend_lookup()
     validate(need(!is.null(lo), "Legenda není načtená."))
