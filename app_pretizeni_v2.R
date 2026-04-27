@@ -179,13 +179,54 @@ save_legend <- function(legend_df, path) {
 
 legend_text_for_question <- function(q, lt) {
   if (is.null(lt) || nrow(lt) == 0) return(NA_character_)
+  
   qq <- normalize_key(q)
-  hit <- lt %>% mutate(key = normalize_key(question)) %>% filter(key == qq)
+  
+  hit <- lt %>%
+    mutate(key = normalize_key(question)) %>%
+    filter(key == qq)
+  
   if (nrow(hit) == 0) return(NA_character_)
+  
   l1 <- hit$label_1[1]
   l5 <- hit$label_5[1]
-  if (all(is.na(c(l1, l5))) || (isTRUE(l1 == "") && isTRUE(l5 == ""))) return(NA_character_)
-  paste0(coalesce(l1, ""), "  |  ", coalesce(l5, ""))
+  
+  l1 <- ifelse(is.na(l1), "", l1)
+  l5 <- ifelse(is.na(l5), "", l5)
+  
+  if (!nzchar(l1) && !nzchar(l5)) return(NA_character_)
+  
+  paste0(l1, "  |  ", l5)
+}
+
+
+legend_text_for_question_display <- function(q, lt) {
+  if (is.null(lt) || nrow(lt) == 0) return("")
+  
+  qq <- normalize_key(q)
+  
+  hit <- lt %>%
+    mutate(key = normalize_key(question)) %>%
+    filter(key == qq)
+  
+  if (nrow(hit) == 0) return("")
+  
+  # Pokud existují display sloupce, použij je.
+  # Ty respektují invertování škály 1–5.
+  if (all(c("label_1_display", "label_5_display") %in% names(hit))) {
+    l1 <- hit$label_1_display[1]
+    l5 <- hit$label_5_display[1]
+  } else {
+    l1 <- hit$label_1[1]
+    l5 <- hit$label_5[1]
+  }
+  
+  l1 <- ifelse(is.na(l1), "", l1)
+  l5 <- ifelse(is.na(l5), "", l5)
+  
+  if (!nzchar(l1) && !nzchar(l5)) return("")
+  
+  paste0("1 = ", l1, "  |  5 = ", l5)
 }
 
 question_choices_grouped <- function(df) {
@@ -360,7 +401,7 @@ prepare_forms_preview_items <- function(qi,
   out <- lapply(names(qi), function(q) {
     z <- qi[[q]]
     q_clean <- clean_question_label(q)
-    legend_txt <- legend_text_for_question(q, lt)
+    legend_txt <- legend_text_for_question_display(q, lt)
     if (is.na(legend_txt)) legend_txt <- ""
     
     if (identical(z$type, "open")) {
@@ -410,8 +451,14 @@ prepare_forms_preview_items <- function(qi,
         ) %>%
           left_join(d_count, by = "value") %>%
           mutate(
-            n = coalesce(n, 0L),
-            pct = ifelse(sum(n) > 0, 100 * n / sum(n), 0),
+            n = coalesce(n, 0L)
+          )
+        
+        total_n <- sum(d$n, na.rm = TRUE)
+        
+        d <- d %>%
+          mutate(
+            pct = if (total_n > 0) 100 * n / total_n else rep(0, n()),
             pct_label = ifelse(n > 0, sprintf("%.1f%%", pct), "")
           )
       }
@@ -435,8 +482,14 @@ prepare_forms_preview_items <- function(qi,
       count(value, name = "n") %>%
       arrange(desc(n)) %>%
       mutate(
-        value = as.character(value),
-        pct = ifelse(sum(n) > 0, 100 * n / sum(n), 0),
+        value = as.character(value)
+      )
+    
+    total_n <- sum(d$n, na.rm = TRUE)
+    
+    d <- d %>%
+      mutate(
+        pct = if (total_n > 0) 100 * n / total_n else rep(0, n()),
         pct_label = ifelse(pct >= 4, sprintf("%.1f%%", pct), "")
       )
     
@@ -456,8 +509,11 @@ prepare_forms_preview_items <- function(qi,
 
 
 forms_preview_plot <- function(item) {
-  caption_txt <- item$legend
-  if (is.null(caption_txt) || !nzchar(caption_txt)) caption_txt <- NULL
+  subtitle_txt <- paste0("Počet odpovědí: ", item$total)
+  
+  if (!is.null(item$legend) && nzchar(item$legend)) {
+    subtitle_txt <- paste0(subtitle_txt, "\n", item$legend)
+  }
   
   if (identical(item$type, "scale")) {
     ymax <- max(item$data$n, na.rm = TRUE)
@@ -474,15 +530,14 @@ forms_preview_plot <- function(item) {
         coord_cartesian(ylim = c(0, ymax * 1.18), clip = "off") +
         labs(
           title = item$question,
-          subtitle = paste0("Počet odpovědí: ", item$total),
-          caption = caption_txt,
+          subtitle = subtitle_txt,
           x = NULL,
           y = "Absolutní četnost"
         ) +
         theme_minimal(base_size = 13) +
         theme(
           plot.title = element_text(face = "bold", colour = "#23314d"),
-          plot.caption = element_text(hjust = 0, colour = "#5b657a"),
+          plot.subtitle = element_text(colour = "#5b657a", lineheight = 1.15),
           panel.grid.minor = element_blank(),
           plot.margin = margin(10, 20, 25, 10)
         )
@@ -507,13 +562,12 @@ forms_preview_plot <- function(item) {
         labs(
           title = item$question,
           subtitle = paste0("Počet odpovědí: ", item$total),
-          caption = caption_txt,
           fill = NULL
         ) +
         theme_void(base_size = 13) +
         theme(
           plot.title = element_text(face = "bold", colour = "#23314d"),
-          plot.caption = element_text(hjust = 0, colour = "#5b657a"),
+          plot.subtitle = element_text(colour = "#5b657a"),
           legend.position = "right",
           plot.margin = margin(10, 10, 25, 10)
         )
@@ -625,9 +679,13 @@ export_forms_preview_report <- function(items,
       "</style>",
       "",
       "```{r functions, include=FALSE}",
+      "```{r functions, include=FALSE}",
       "forms_preview_plot <- function(item) {",
-      "  caption_txt <- item$legend",
-      "  if (is.null(caption_txt) || !nzchar(caption_txt)) caption_txt <- NULL",
+      "  subtitle_txt <- paste0('Počet odpovědí: ', item$total)",
+      "",
+      "  if (!is.null(item$legend) && nzchar(item$legend)) {",
+      "    subtitle_txt <- paste0(subtitle_txt, '\\n', item$legend)",
+      "  }",
       "",
       "  if (identical(item$type, 'scale')) {",
       "    ymax <- max(item$data$n, na.rm = TRUE)",
@@ -643,15 +701,14 @@ export_forms_preview_report <- function(items,
       "        coord_cartesian(ylim = c(0, ymax * 1.18), clip = 'off') +",
       "        labs(",
       "          title = item$question,",
-      "          subtitle = paste0('Počet odpovědí: ', item$total),",
-      "          caption = caption_txt,",
+      "          subtitle = subtitle_txt,",
       "          x = NULL,",
       "          y = 'Absolutní četnost'",
       "        ) +",
       "        theme_minimal(base_size = 13) +",
       "        theme(",
       "          plot.title = element_text(face = 'bold', colour = '#23314d'),",
-      "          plot.caption = element_text(hjust = 0, colour = '#5b657a'),",
+      "          plot.subtitle = element_text(colour = '#5b657a', lineheight = 1.15),",
       "          panel.grid.minor = element_blank(),",
       "          plot.margin = margin(10, 20, 25, 10)",
       "        )",
@@ -674,13 +731,12 @@ export_forms_preview_report <- function(items,
       "        labs(",
       "          title = item$question,",
       "          subtitle = paste0('Počet odpovědí: ', item$total),",
-      "          caption = caption_txt,",
       "          fill = NULL",
       "        ) +",
       "        theme_void(base_size = 13) +",
       "        theme(",
       "          plot.title = element_text(face = 'bold', colour = '#23314d'),",
-      "          plot.caption = element_text(hjust = 0, colour = '#5b657a'),",
+      "          plot.subtitle = element_text(colour = '#5b657a'),",
       "          legend.position = 'right',",
       "          plot.margin = margin(10, 10, 25, 10)",
       "        )",
@@ -782,7 +838,7 @@ ui <- fluidPage(
   ),
   div(
     class = "app-title",
-    h2("Přetížení – analytická Shiny aplikace"),
+    h2("ALT Zatížení – analytická Shiny aplikace"),
     p("Přehled otázek, srovnání tříd, korelace a otevřené odpovědi na jednom místě.")
   ),
   sidebarLayout(
@@ -1163,36 +1219,41 @@ server <- function(input, output, session) {
                 style = "color: #5b657a;",
                 paste0("Počet textových odpovědí: ", item$total)
               ),
+              if (!is.null(item$legend) && nzchar(item$legend)) {
+                tags$p(
+                  style = "color: #5b657a; font-style: italic;",
+                  item$legend
+                )
+              },
               answers_ui
             )
           )
         }
         
-        plotOutput(
-          outputId = paste0("forms_preview_plot_", i),
-          height = if (identical(item$type, "categorical")) "430px" else "360px"
+        out_id <- paste0("forms_preview_plot_", i)
+        
+        local({
+          ii <- i
+          current_item <- item
+          current_out_id <- out_id
+          
+          output[[current_out_id]] <- renderPlot({
+            forms_preview_plot(current_item)
+          })
+        })
+        
+        tags$div(
+          class = "well",
+          style = "margin-bottom: 20px;",
+          plotOutput(
+            outputId = out_id,
+            height = if (identical(item$type, "categorical")) "430px" else "360px"
+          )
         )
       })
     )
   })
   
-  
-  observe({
-    items <- forms_preview_items()
-    
-    for (i in seq_along(items)) {
-      local({
-        ii <- i
-        item <- items[[ii]]
-        out_id <- paste0("forms_preview_plot_", ii)
-        
-        output[[out_id]] <- renderPlot({
-          req(!identical(item$type, "open"))
-          forms_preview_plot(item)
-        })
-      })
-    }
-  })
   
   
   output$forms_preview_download <- downloadHandler(
