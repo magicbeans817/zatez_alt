@@ -36,7 +36,7 @@ smart_read_csv <- function(path) {
   first <- paste(txt, collapse = "\n")
   semi_n <- stringr::str_count(first, ";")
   comma_n <- stringr::str_count(first, ",")
-
+  
   if (semi_n > comma_n) {
     out <- tryCatch(
       read.csv2(path, check.names = FALSE, stringsAsFactors = FALSE, fileEncoding = "UTF-8-BOM"),
@@ -48,7 +48,7 @@ smart_read_csv <- function(path) {
       error = function(e) read_csv(path, show_col_types = FALSE, name_repair = "minimal")
     )
   }
-
+  
   out <- as.data.frame(out, check.names = FALSE, stringsAsFactors = FALSE)
   names(out) <- sanitize_names(names(out))
   out
@@ -136,13 +136,13 @@ load_legend <- function(path, questions) {
     label_5 = NA_character_,
     stringsAsFactors = FALSE
   )
-
+  
   if (is.null(path) || str_trim(path) == "") return(base)
   if (!file.exists(path)) {
     tryCatch(save_legend(base, path), error = function(e) NULL)
     return(base)
   }
-
+  
   lg <- smart_read_csv(path)
   names(lg) <- sanitize_names(clean_question_label(names(lg)))
   req_cols <- c("question", "label_1", "label_5")
@@ -150,7 +150,7 @@ load_legend <- function(path, questions) {
     tryCatch(save_legend(base, path), error = function(e) NULL)
     return(base)
   }
-
+  
   lg <- lg %>%
     transmute(
       question = as.character(.data$question),
@@ -159,7 +159,7 @@ load_legend <- function(path, questions) {
       key = normalize_key(.data$question)
     ) %>%
     distinct(key, .keep_all = TRUE)
-
+  
   base$key <- normalize_key(base$question)
   out <- base %>%
     left_join(select(lg, key, label_1_file = label_1, label_5_file = label_5), by = "key") %>%
@@ -168,7 +168,7 @@ load_legend <- function(path, questions) {
       label_5 = coalesce(label_5_file, label_5)
     ) %>%
     select(question, label_1, label_5)
-
+  
   out
 }
 
@@ -236,12 +236,121 @@ question_choices_grouped <- function(df) {
   split(qs, extract_subject(qs))
 }
 
+find_pdf_browser <- function() {
+  candidates <- c(
+    Sys.getenv("CHROME_BIN"),
+    Sys.which("chrome"),
+    Sys.which("chrome.exe"),
+    Sys.which("google-chrome"),
+    Sys.which("msedge"),
+    Sys.which("msedge.exe"),
+    file.path(Sys.getenv("PROGRAMFILES"), "Google/Chrome/Application/chrome.exe"),
+    file.path(Sys.getenv("PROGRAMFILES(X86)"), "Google/Chrome/Application/chrome.exe"),
+    file.path(Sys.getenv("LOCALAPPDATA"), "Google/Chrome/Application/chrome.exe"),
+    file.path(Sys.getenv("PROGRAMFILES"), "Microsoft/Edge/Application/msedge.exe"),
+    file.path(Sys.getenv("PROGRAMFILES(X86)"), "Microsoft/Edge/Application/msedge.exe")
+  )
+  
+  candidates <- unique(candidates[nzchar(candidates)])
+  candidates <- candidates[file.exists(candidates)]
+  
+  if (length(candidates) == 0) {
+    stop(
+      "Nepodařilo se najít Google Chrome ani Microsoft Edge. ",
+      "Pro PDF export musí být nainstalovaný Chrome nebo Edge."
+    )
+  }
+  
+  normalizePath(candidates[1], winslash = "/", mustWork = TRUE)
+}
+
+
+path_for_chrome <- function(path, mustWork = TRUE) {
+  p <- normalizePath(path, winslash = "/", mustWork = mustWork)
+  
+  if (.Platform$OS.type == "windows" && file.exists(p)) {
+    p <- utils::shortPathName(p)
+    p <- gsub("\\\\", "/", p)
+  }
+  
+  p
+}
+
+
+chrome_html_to_pdf <- function(html_path,
+                               pdf_path,
+                               wait_seconds = 2,
+                               timeout = 90) {
+  browser <- find_pdf_browser()
+  
+  html_abs <- path_for_chrome(html_path, mustWork = TRUE)
+  
+  pdf_dir <- path_for_chrome(dirname(pdf_path), mustWork = TRUE)
+  pdf_abs <- file.path(pdf_dir, basename(pdf_path))
+  pdf_abs <- gsub("\\\\", "/", pdf_abs)
+  
+  if (file.exists(pdf_abs)) {
+    unlink(pdf_abs, force = TRUE)
+  }
+  
+  profile_dir <- file.path(
+    tempdir(),
+    paste0("chrome_pdf_profile_", Sys.getpid(), "_", sample.int(1e6, 1))
+  )
+  dir.create(profile_dir, recursive = TRUE, showWarnings = FALSE)
+  profile_dir <- path_for_chrome(profile_dir, mustWork = TRUE)
+  
+  html_url <- paste0("file:///", html_abs)
+  
+  args <- c(
+    "--headless=new",
+    "--disable-gpu",
+    "--no-sandbox",
+    "--disable-dev-shm-usage",
+    "--run-all-compositor-stages-before-draw",
+    paste0("--user-data-dir=", profile_dir),
+    paste0("--virtual-time-budget=", wait_seconds * 1000),
+    paste0("--print-to-pdf=", pdf_abs),
+    "--print-to-pdf-no-header",
+    html_url
+  )
+  
+  res <- tryCatch(
+    system2(
+      command = browser,
+      args = args,
+      stdout = TRUE,
+      stderr = TRUE,
+      wait = TRUE,
+      timeout = timeout
+    ),
+    error = function(e) {
+      stop(
+        "Chrome/Edge PDF export selhal už při spuštění.\n\n",
+        "Prohlížeč: ", browser, "\n\n",
+        "Chyba:\n", conditionMessage(e)
+      )
+    }
+  )
+  
+  if (!file.exists(pdf_abs) || is.na(file.info(pdf_abs)$size) || file.info(pdf_abs)$size == 0) {
+    stop(
+      "Chrome/Edge nevytvořil PDF soubor.\n\n",
+      "Prohlížeč: ", browser, "\n\n",
+      "HTML vstup: ", html_abs, "\n",
+      "PDF výstup: ", pdf_abs, "\n\n",
+      "Výstup z prohlížeče:\n",
+      paste(res, collapse = "\n")
+    )
+  }
+  
+  invisible(pdf_abs)
+}
+
+
+
 check_plot_export_pkgs <- function(format) {
   pkgs <- c("rmarkdown", "knitr", "ggplot2")
-  
-  if (identical(format, "pdf")) {
-    pkgs <- c(pkgs, "webshot2")
-  }
   
   missing <- pkgs[
     !vapply(pkgs, requireNamespace, quietly = TRUE, FUN.VALUE = logical(1))
@@ -262,44 +371,33 @@ export_ggplot_report <- function(plot_obj,
                                  subtitle = "",
                                  format = c("html", "pdf")) {
   format <- match.arg(format)
-  check_plot_export_pkgs <- function(format) {
-    pkgs <- c("rmarkdown", "knitr", "ggplot2")
-    
-    if (identical(format, "pdf")) {
-      pkgs <- c(pkgs, "webshot2")
-    }
-    
-    failed <- character(0)
-    messages <- character(0)
-    
-    for (pkg in pkgs) {
-      ok <- tryCatch(
-        {
-          loadNamespace(pkg)
-          TRUE
-        },
-        error = function(e) {
-          failed <<- c(failed, pkg)
-          messages <<- c(messages, paste0(pkg, ": ", conditionMessage(e)))
-          FALSE
-        }
-      )
-    }
-    
-    if (length(failed) > 0) {
-      stop(
-        "Pro export nejdou načíst tyto balíčky: ",
-        paste(failed, collapse = ", "),
-        "\n\nSkutečný důvod:\n",
-        paste(messages, collapse = "\n"),
-        "\n\nZkus je přeinstalovat v aktuální R session přes:\n",
-        "install.packages(c(",
-        paste(shQuote(unique(failed)), collapse = ", "),
-        "), dependencies = TRUE)"
-      )
-    }
-    
-    invisible(TRUE)
+  
+  pkgs <- c("rmarkdown", "knitr", "ggplot2")
+  
+  failed <- character(0)
+  messages <- character(0)
+  
+  for (pkg in pkgs) {
+    tryCatch(
+      {
+        loadNamespace(pkg)
+        TRUE
+      },
+      error = function(e) {
+        failed <<- c(failed, pkg)
+        messages <<- c(messages, paste0(pkg, ": ", conditionMessage(e)))
+        FALSE
+      }
+    )
+  }
+  
+  if (length(failed) > 0) {
+    stop(
+      "Pro export nejdou načíst tyto balíčky: ",
+      paste(failed, collapse = ", "),
+      "\n\nSkutečný důvod:\n",
+      paste(messages, collapse = "\n")
+    )
   }
   
   subtitle <- if (is.null(subtitle)) "" else as.character(subtitle)
@@ -373,20 +471,16 @@ export_ggplot_report <- function(plot_obj,
   )
   
   if (identical(format, "pdf")) {
-    html_url <- paste0(
-      "file:///",
-      normalizePath(html_path, winslash = "/", mustWork = TRUE)
-    )
     
-    webshot2::webshot(
-      url = html_url,
-      file = pdf_path,
-      delay = 1,
-      vwidth = 1600,
-      vheight = 1100
+    chrome_html_to_pdf(
+      html_path = html_path,
+      pdf_path = pdf_path,
+      wait_seconds = 2,
+      timeout = 90
     )
     
     file.copy(pdf_path, file, overwrite = TRUE)
+    
   } else {
     file.copy(html_path, file, overwrite = TRUE)
   }
@@ -584,10 +678,6 @@ check_forms_preview_export_pkgs <- function(format) {
     "dplyr", "tidyr", "forcats", "stringr", "htmltools"
   )
   
-  if (identical(format, "pdf")) {
-    pkgs <- c(pkgs, "webshot2")
-  }
-  
   failed <- character(0)
   messages <- character(0)
   
@@ -678,7 +768,6 @@ export_forms_preview_report <- function(items,
       ".meta { color: #5b657a; font-size: 0.95em; }",
       "</style>",
       "",
-      "```{r functions, include=FALSE}",
       "```{r functions, include=FALSE}",
       "forms_preview_plot <- function(item) {",
       "  subtitle_txt <- paste0('Počet odpovědí: ', item$total)",
@@ -796,20 +885,16 @@ export_forms_preview_report <- function(items,
   )
   
   if (identical(format, "pdf")) {
-    html_url <- paste0(
-      "file:///",
-      normalizePath(html_path, winslash = "/", mustWork = TRUE)
-    )
     
-    webshot2::webshot(
-      url = html_url,
-      file = pdf_path,
-      delay = 1,
-      vwidth = 1600,
-      vheight = 1800
+    chrome_html_to_pdf(
+      html_path = html_path,
+      pdf_path = pdf_path,
+      wait_seconds = 3,
+      timeout = 120
     )
     
     file.copy(pdf_path, file, overwrite = TRUE)
+    
   } else {
     file.copy(html_path, file, overwrite = TRUE)
   }
@@ -998,7 +1083,7 @@ server <- function(input, output, session) {
   dat <- reactiveVal(NULL)
   legend_override <- reactiveVal(NULL)
   legend_status <- reactiveVal("Legenda zatím nenačtena.")
-
+  
   load_data_into_app <- function(df) {
     names(df) <- sanitize_names(names(df))
     dat(df)
@@ -1008,10 +1093,10 @@ server <- function(input, output, session) {
     lg <- load_legend(input$legend_path, questions)
     legend_override(lg)
   }
-
+  
   observe({
     if (!is.null(input$file)) return()
-
+    
     candidate_paths <- c(
       file.path(getwd(), "data_pretizeni.csv"),
       file.path(getwd(), "data_pretizenik.csv"),
@@ -1019,17 +1104,17 @@ server <- function(input, output, session) {
     )
     candidate_paths <- unique(candidate_paths[file.exists(candidate_paths)])
     if (length(candidate_paths) == 0) return()
-
+    
     df <- smart_read_csv(candidate_paths[1])
     load_data_into_app(df)
   })
-
+  
   observeEvent(input$file, {
     req(input$file)
     df <- smart_read_csv(input$file$datapath)
     load_data_into_app(df)
   })
-
+  
   observeEvent(input$reload_legend, {
     df <- dat()
     req(df)
@@ -1044,7 +1129,7 @@ server <- function(input, output, session) {
       legend_status(paste("Legenda vytvořena jako šablona v:", input$legend_path))
     }
   }, ignoreInit = FALSE)
-
+  
   observeEvent(input$save_legend, {
     lg <- legend_override()
     req(lg)
@@ -1055,9 +1140,9 @@ server <- function(input, output, session) {
       legend_status(paste("Uložení legendy selhalo:", e$message))
     })
   })
-
+  
   output$legend_status <- renderText(legend_status())
-
+  
   output$class_filter_ui <- renderUI({
     df <- dat()
     req(df)
@@ -1067,7 +1152,7 @@ server <- function(input, output, session) {
     classes <- sort(unique(na.omit(trimws(as.character(df[[cls]])))))
     checkboxGroupInput("classes", "Z jakých tříd chceš data?", choices = classes, selected = classes)
   })
-
+  
   filtered_df <- reactive({
     df <- dat()
     req(df)
@@ -1079,7 +1164,7 @@ server <- function(input, output, session) {
     keep <- class_vec %in% trimws(input$classes)
     df[keep %in% TRUE, , drop = FALSE]
   })
-
+  
   question_groups <- reactive({
     df <- dat()
     req(df)
@@ -1118,19 +1203,19 @@ server <- function(input, output, session) {
     updatePickerInput(session, "questions", choices = shown_groups, selected = valid_selected)
   })
   
-
+  
   question_info <- reactive({
     df <- filtered_df()
     req(df)
     qs <- input$questions
     if (is.null(qs) || length(qs) == 0) return(list())
-
+    
     out <- lapply(qs, function(q) {
       x_raw <- df[[q]]
       x_chr <- as.character(x_raw)
       x_num <- suppressWarnings(to_numeric(x_raw))
       q_norm <- normalize_key(q)
-
+      
       if (str_detect(q_norm, "okomentovat")) {
         list(type = "open", x_num = NULL, x_chr = x_chr, is_scale = FALSE)
       } else if (is_good_numeric(x_num)) {
@@ -1142,7 +1227,7 @@ server <- function(input, output, session) {
     names(out) <- qs
     out
   })
-
+  
   observe({
     qi <- question_info()
     if (length(qi) == 0) {
@@ -1153,7 +1238,7 @@ server <- function(input, output, session) {
     updatePickerInput(session, "invert_questions", choices = scale_qs,
                       selected = intersect(input$invert_questions, scale_qs))
   })
-
+  
   legend_lookup <- reactive({
     lo <- legend_override()
     if (is.null(lo)) return(NULL)
@@ -1164,7 +1249,7 @@ server <- function(input, output, session) {
       label_5_display = ifelse(question %in% inv, label_1, label_5)
     )
   })
-
+  
   forms_preview_items <- reactive({
     qi <- question_info()
     lt <- legend_lookup()
@@ -1421,7 +1506,7 @@ server <- function(input, output, session) {
     
     p + facet_wrap(type ~ panel, scales = "free_y", ncol = 2)
   })
-
+  
   output$hist_grid <- renderPlot({
     req(hist_plot())
     hist_plot()
@@ -1570,7 +1655,7 @@ server <- function(input, output, session) {
     
     p
   })
-
+  
   output$box_all <- renderPlot({
     req(box_plot())
     box_plot()
@@ -1613,27 +1698,27 @@ server <- function(input, output, session) {
       )
     datatable(view, options = list(pageLength = 20, scrollX = TRUE), rownames = FALSE)
   })
-
-
+  
+  
   output$open_ui <- renderUI({
     qi <- question_info()
     if (length(qi) == 0) return(tags$div("Vyber otázky vlevo."))
     open_qs <- names(qi)[vapply(qi, function(z) z$type == "open", logical(1))]
     if (length(open_qs) == 0) return(tags$div("Žádná vybraná otázka neobsahuje 'okomentovat'."))
-
+    
     tagList(lapply(seq_along(open_qs), function(i) {
       q <- open_qs[i]
       tid <- paste0("open__", i)
       tagList(tags$h4(clean_question_label(q)), DTOutput(tid), tags$hr())
     }))
   })
-
+  
   observe({
     df <- filtered_df()
     qi <- question_info()
     req(df)
     open_qs <- names(qi)[vapply(qi, function(z) z$type == "open", logical(1))]
-
+    
     for (i in seq_along(open_qs)) {
       local({
         q <- open_qs[i]
@@ -1646,18 +1731,18 @@ server <- function(input, output, session) {
       })
     }
   })
-
+  
   numeric_df_corr <- reactive({
     df <- filtered_df()
     req(df)
     cols <- input$vars_corr
     if (is.null(cols) || length(cols) == 0) return(NULL)
-
+    
     tmp <- lapply(cols, function(cn) to_numeric(df[[cn]]))
     names(tmp) <- cols
     keep <- vapply(tmp, is_good_numeric, logical(1))
     if (!any(keep)) return(NULL)
-
+    
     nd <- as.data.frame(tmp[keep], check.names = FALSE)
     inv <- input$invert_questions
     if (!is.null(inv) && length(inv) > 0) {
@@ -1665,15 +1750,15 @@ server <- function(input, output, session) {
     }
     nd
   })
-
   
-
+  
+  
   corr_mat <- reactive({
     nd <- numeric_df_corr()
     if (is.null(nd) || ncol(nd) < 2) return(NULL)
     cor(nd, use = "pairwise.complete.obs")
   })
-
+  
   output$pairs_dt <- renderDT({
     cm <- corr_mat()
     validate(need(!is.null(cm), "Vyber aspoň dvě rozumně numerické proměnné."))
@@ -1686,13 +1771,13 @@ server <- function(input, output, session) {
       mutate(abs_r = abs(r)) %>%
       filter(abs_r >= input$absr_range[1], abs_r <= input$absr_range[2]) %>%
       arrange(desc(abs_r))
-
+    
     datatable(
       pairs %>% mutate(var1 = clean_question_label(var1), var2 = clean_question_label(var2)),
       options = list(pageLength = 20, scrollX = TRUE), rownames = FALSE
     ) %>% formatRound(c("r", "abs_r"), 3)
   })
-
+  
   output$corr_dt <- renderDT({
     cm <- corr_mat()
     validate(need(!is.null(cm), "Vyber aspoň dvě rozumně numerické proměnné."))
@@ -1701,7 +1786,7 @@ server <- function(input, output, session) {
     names(cm_df)[-1] <- clean_question_label(names(cm_df)[-1])
     datatable(cm_df, options = list(pageLength = 20, scrollX = TRUE), rownames = FALSE)
   })
-
+  
   observe({
     nd <- numeric_df_corr()
     if (is.null(nd)) {
@@ -1714,7 +1799,7 @@ server <- function(input, output, session) {
     updateSelectInput(session, "reg_x", choices = lab, selected = vars[1])
     updateSelectInput(session, "reg_y", choices = lab, selected = vars[min(2, length(vars))])
   })
-
+  
   reg_result <- eventReactive(input$run_reg, {
     nd <- numeric_df_corr()
     req(nd, input$reg_x, input$reg_y)
@@ -1725,7 +1810,7 @@ server <- function(input, output, session) {
     fit <- lm(y ~ x, data = dfxy)
     list(df = dfxy, fit = fit)
   })
-
+  
   output$reg_plot <- renderPlot({
     rr <- reg_result()
     req(rr)
@@ -1734,7 +1819,7 @@ server <- function(input, output, session) {
       geom_smooth(method = "lm", se = FALSE) +
       labs(x = clean_question_label(input$reg_x), y = clean_question_label(input$reg_y), title = "Lineární regrese (y ~ x)")
   })
-
+  
   output$reg_summary <- renderPrint({
     rr <- reg_result()
     req(rr)
@@ -1743,18 +1828,18 @@ server <- function(input, output, session) {
     cat("R-squared:", signif(sm$r.squared, 4), "\n\n")
     print(coef(sm))
   })
-
+  
   numeric_df_stats <- reactive({
     df <- filtered_df()
     req(df)
     cols <- input$vars_stats
     if (is.null(cols) || length(cols) == 0) return(NULL)
-
+    
     tmp <- lapply(cols, function(cn) to_numeric(df[[cn]]))
     names(tmp) <- cols
     keep <- vapply(tmp, is_good_numeric, logical(1))
     if (!any(keep)) return(NULL)
-
+    
     nd <- as.data.frame(tmp[keep], check.names = FALSE)
     inv <- input$invert_questions
     if (!is.null(inv) && length(inv) > 0) {
@@ -1762,12 +1847,12 @@ server <- function(input, output, session) {
     }
     nd
   })
-
+  
   output$stats_dt <- renderDT({
     nd <- numeric_df_stats()
     lt <- legend_lookup()
     validate(need(!is.null(nd), "Žádné numerické proměnné po filtru nebo nic nevybráno."))
-
+    
     stats <- bind_rows(lapply(names(nd), function(v) {
       s <- numeric_summary(nd[[v]])
       data.frame(
@@ -1782,11 +1867,11 @@ server <- function(input, output, session) {
         stringsAsFactors = FALSE
       )
     }))
-
+    
     datatable(stats, options = list(pageLength = 20, order = list(list(4, "desc")), scrollX = TRUE), rownames = FALSE) %>%
       formatRound(c("mean", "median", "sd", "pct_missing"), 3)
   })
-
+  
   output$diag <- renderPrint({
     df <- filtered_df()
     qi <- question_info()
@@ -1797,7 +1882,7 @@ server <- function(input, output, session) {
     cat("Automaticky odfiltrované metadata:\n")
     print(metadata_cols_present(df))
     cat("\nPočet vybraných otázek:", length(qi), "\n\n")
-
+    
     if (length(qi) == 0) {
       cat("Vyber otázky.\n")
     } else {
