@@ -980,15 +980,7 @@ ui <- fluidPage(
         options = pickerOptions(`actions-box` = TRUE, `live-search` = TRUE)
       ),
       hr(),
-      h4("Korelace a statistiky"),
-      pickerInput(
-        "vars_corr",
-        "Proměnné pro korelace:",
-        choices = NULL,
-        multiple = TRUE,
-        options = pickerOptions(`actions-box` = TRUE, `live-search` = TRUE)
-      ),
-      sliderInput("absr_range", "|r| interval:", min = 0, max = 1, value = c(0, 1), step = 0.01),
+      h4("Přehled statistik"),
       pickerInput(
         "vars_stats",
         "Proměnné pro přehled statistik:",
@@ -1071,21 +1063,51 @@ ui <- fluidPage(
           tags$hr(),
           uiOutput("forms_preview_ui")
         ),
-        tabPanel("Korelace & regrese",
-                 h4("Páry proměnných"),
-                 DTOutput("pairs_dt"),
-                 hr(),
-                 h4("Korelační matice"),
-                 DTOutput("corr_dt"),
-                 hr(),
-                 fluidRow(
-                   column(4, selectInput("reg_x", "X proměnná:", choices = NULL)),
-                   column(4, selectInput("reg_y", "Y proměnná:", choices = NULL)),
-                   column(4, br(), actionButton("run_reg", "Spočítat regresi", width = "100%"))
-                 ),
-                 br(),
-                 plotOutput("reg_plot", height = "380px"),
-                 verbatimTextOutput("reg_summary")
+        tabPanel(
+          "Korelace & regrese",
+          
+          h4("Výběr otázek pro korelační matici a regresi"),
+          pickerInput(
+            "vars_corr",
+            "Otázky pro korelační matici a regresi:",
+            choices = NULL,
+            multiple = TRUE,
+            options = pickerOptions(
+              `actions-box` = TRUE,
+              `live-search` = TRUE,
+              `selected-text-format` = "count > 3",
+              size = 15,
+              `live-search-placeholder` = "Piš název otázky nebo předmět..."
+            )
+          ),
+          
+          sliderInput(
+            "absr_range",
+            "|r| interval:",
+            min = 0,
+            max = 1,
+            value = c(0, 1),
+            step = 0.01
+          ),
+          
+          hr(),
+          h4("Páry proměnných"),
+          DTOutput("pairs_dt"),
+          
+          hr(),
+          h4("Korelační matice"),
+          DTOutput("corr_dt"),
+          
+          hr(),
+          h4("Lineární regrese"),
+          fluidRow(
+            column(4, selectInput("reg_x", "X proměnná:", choices = NULL)),
+            column(4, selectInput("reg_y", "Y proměnná:", choices = NULL)),
+            column(4, br(), actionButton("run_reg", "Spočítat regresi", width = "100%"))
+          ),
+          br(),
+          plotOutput("reg_plot", height = "380px"),
+          verbatimTextOutput("reg_summary")
         ),
         tabPanel("Přehled statistik", DTOutput("stats_dt")),
         tabPanel("Legenda", DTOutput("legend_dt")),
@@ -1783,23 +1805,32 @@ server <- function(input, output, session) {
     
     cols <- input$vars_corr
     
-    if (is.null(cols) || length(cols) == 0) {
+    if (is.null(cols)) {
       cols <- all_num
     }
     
     cols <- intersect(cols, all_num)
     
-    if (length(cols) == 0) return(NULL)
+    if (length(cols) == 0) {
+      return(NULL)
+    }
     
-    tmp <- lapply(cols, function(cn) to_numeric(df[[cn]]))
+    tmp <- lapply(cols, function(cn) {
+      suppressWarnings(to_numeric(df[[cn]]))
+    })
+    
     names(tmp) <- cols
     
     keep <- vapply(tmp, is_good_numeric, logical(1))
-    if (!any(keep)) return(NULL)
+    
+    if (!any(keep)) {
+      return(NULL)
+    }
     
     nd <- as.data.frame(tmp[keep], check.names = FALSE)
     
     inv <- input$invert_questions
+    
     if (!is.null(inv) && length(inv) > 0) {
       for (q in intersect(names(nd), inv)) {
         if (is_scale_1_5(nd[[q]])) {
@@ -1821,7 +1852,7 @@ server <- function(input, output, session) {
   
   output$pairs_dt <- renderDT({
     cm <- corr_mat()
-    validate(need(!is.null(cm), "Vyber aspoň dvě rozumně numerické proměnné."))
+    validate(need(!is.null(cm), "V části „Otázky pro korelační matici a regresi“ vyber aspoň dvě numerické otázky."))
     idx <- which(upper.tri(cm), arr.ind = TRUE)
     pairs <- tibble(
       var1 = colnames(cm)[idx[, 1]],
@@ -1840,7 +1871,7 @@ server <- function(input, output, session) {
   
   output$corr_dt <- renderDT({
     cm <- corr_mat()
-    validate(need(!is.null(cm), "Vyber aspoň dvě rozumně numerické proměnné."))
+    validate(need(!is.null(cm), "V části „Otázky pro korelační matici a regresi“ vyber aspoň dvě numerické otázky."))
     cm2 <- round(cm, 3)
     cm_df <- data.frame(Proměnná = clean_question_label(rownames(cm2)), cm2, check.names = FALSE)
     names(cm_df)[-1] <- clean_question_label(names(cm_df)[-1])
