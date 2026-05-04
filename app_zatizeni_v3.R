@@ -1066,10 +1066,11 @@ ui <- fluidPage(
         tabPanel(
           "Korelace & regrese",
           
-          h4("Výběr otázek pro korelační matici a regresi"),
+          h4("Korelační matice"),
+          
           pickerInput(
             "vars_corr",
-            "Otázky pro korelační matici a regresi:",
+            "Výběr otázek pro korelační matici a regresi:",
             choices = NULL,
             multiple = TRUE,
             options = pickerOptions(
@@ -1081,30 +1082,42 @@ ui <- fluidPage(
             )
           ),
           
-          sliderInput(
-            "absr_range",
-            "|r| interval:",
-            min = 0,
-            max = 1,
-            value = c(0, 1),
-            step = 0.01
-          ),
-          
-          hr(),
-          h4("Páry proměnných"),
-          DTOutput("pairs_dt"),
-          
-          hr(),
-          h4("Korelační matice"),
           DTOutput("corr_dt"),
           
           hr(),
+          
+          checkboxInput(
+            "show_pairs",
+            "Zobrazit páry proměnných seřazené podle síly korelace",
+            value = FALSE
+          ),
+          
+          conditionalPanel(
+            condition = "input.show_pairs == true",
+            
+            sliderInput(
+              "absr_range",
+              "|r| interval:",
+              min = 0,
+              max = 1,
+              value = c(0, 1),
+              step = 0.01
+            ),
+            
+            h4("Páry proměnných"),
+            DTOutput("pairs_dt")
+          ),
+          
+          hr(),
+          
           h4("Lineární regrese"),
+          
           fluidRow(
             column(4, selectInput("reg_x", "X proměnná:", choices = NULL)),
             column(4, selectInput("reg_y", "Y proměnná:", choices = NULL)),
             column(4, br(), actionButton("run_reg", "Spočítat regresi", width = "100%"))
           ),
+          
           br(),
           plotOutput("reg_plot", height = "380px"),
           verbatimTextOutput("reg_summary")
@@ -1851,8 +1864,10 @@ server <- function(input, output, session) {
   })
   
   output$pairs_dt <- renderDT({
+    req(isTRUE(input$show_pairs))
+    
     cm <- corr_mat()
-    validate(need(!is.null(cm), "V části „Otázky pro korelační matici a regresi“ vyber aspoň dvě numerické otázky."))
+    validate(need(!is.null(cm), "V části „Výběr otázek pro korelační matici a regresi“ vyber aspoň dvě numerické otázky."))
     idx <- which(upper.tri(cm), arr.ind = TRUE)
     pairs <- tibble(
       var1 = colnames(cm)[idx[, 1]],
