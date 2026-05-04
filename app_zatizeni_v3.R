@@ -236,6 +236,26 @@ question_choices_grouped <- function(df) {
   split(qs, extract_subject(qs))
 }
 
+numeric_question_choices_grouped <- function(df) {
+  cls <- class_col_detect(df)
+  drops <- c(metadata_cols_present(df), cls)
+  qs <- setdiff(names(df), drops)
+  
+  keep <- vapply(qs, function(q) {
+    x_num <- suppressWarnings(to_numeric(df[[q]]))
+    is_good_numeric(x_num)
+  }, logical(1))
+  
+  qs_num <- qs[keep]
+  
+  if (length(qs_num) == 0) {
+    return(character(0))
+  }
+  
+  groups <- split(qs_num, extract_subject(qs_num))
+  groups[lengths(groups) > 0]
+}
+
 find_pdf_browser <- function() {
   candidates <- c(
     Sys.getenv("CHROME_BIN"),
@@ -1171,6 +1191,8 @@ server <- function(input, output, session) {
     question_choices_grouped(df)
   })
   
+  
+  
   observe({
     groups <- question_groups()
     req(groups)
@@ -1540,26 +1562,46 @@ server <- function(input, output, session) {
   
   
   observe({
-    df <- dat()
+    df <- filtered_df()
     req(df)
-    groups <- question_choices_grouped(df)
-    all_q <- unlist(groups, use.names = FALSE)
+    
+    groups_num <- numeric_question_choices_grouped(df)
+    all_num <- unlist(groups_num, use.names = FALSE)
+    
+    if (length(all_num) == 0) {
+      updatePickerInput(session, "vars_corr", choices = character(), selected = character())
+      updatePickerInput(session, "vars_stats", choices = character(), selected = character())
+      updateSelectInput(session, "reg_x", choices = character())
+      updateSelectInput(session, "reg_y", choices = character())
+      return()
+    }
     
     current_corr <- isolate(input$vars_corr)
-    if (is.null(current_corr)) current_corr <- character(0)
+    if (is.null(current_corr) || length(current_corr) == 0) {
+      selected_corr <- all_num
+    } else {
+      selected_corr <- intersect(current_corr, all_num)
+    }
+    
+    current_stats <- isolate(input$vars_stats)
+    if (is.null(current_stats) || length(current_stats) == 0) {
+      selected_stats <- all_num
+    } else {
+      selected_stats <- intersect(current_stats, all_num)
+    }
     
     updatePickerInput(
       session,
       "vars_corr",
-      choices = groups,
-      selected = intersect(current_corr, all_q)
+      choices = groups_num,
+      selected = selected_corr
     )
     
     updatePickerInput(
       session,
       "vars_stats",
-      choices = groups,
-      selected = all_q
+      choices = groups_num,
+      selected = selected_stats
     )
   })
   
@@ -1735,19 +1777,37 @@ server <- function(input, output, session) {
   numeric_df_corr <- reactive({
     df <- filtered_df()
     req(df)
+    
+    groups_num <- numeric_question_choices_grouped(df)
+    all_num <- unlist(groups_num, use.names = FALSE)
+    
     cols <- input$vars_corr
-    if (is.null(cols) || length(cols) == 0) return(NULL)
+    
+    if (is.null(cols) || length(cols) == 0) {
+      cols <- all_num
+    }
+    
+    cols <- intersect(cols, all_num)
+    
+    if (length(cols) == 0) return(NULL)
     
     tmp <- lapply(cols, function(cn) to_numeric(df[[cn]]))
     names(tmp) <- cols
+    
     keep <- vapply(tmp, is_good_numeric, logical(1))
     if (!any(keep)) return(NULL)
     
     nd <- as.data.frame(tmp[keep], check.names = FALSE)
+    
     inv <- input$invert_questions
     if (!is.null(inv) && length(inv) > 0) {
-      for (q in intersect(names(nd), inv)) if (is_scale_1_5(nd[[q]])) nd[[q]] <- invert_1_5(nd[[q]])
+      for (q in intersect(names(nd), inv)) {
+        if (is_scale_1_5(nd[[q]])) {
+          nd[[q]] <- invert_1_5(nd[[q]])
+        }
+      }
     }
+    
     nd
   })
   
@@ -1832,19 +1892,37 @@ server <- function(input, output, session) {
   numeric_df_stats <- reactive({
     df <- filtered_df()
     req(df)
+    
+    groups_num <- numeric_question_choices_grouped(df)
+    all_num <- unlist(groups_num, use.names = FALSE)
+    
     cols <- input$vars_stats
-    if (is.null(cols) || length(cols) == 0) return(NULL)
+    
+    if (is.null(cols) || length(cols) == 0) {
+      cols <- all_num
+    }
+    
+    cols <- intersect(cols, all_num)
+    
+    if (length(cols) == 0) return(NULL)
     
     tmp <- lapply(cols, function(cn) to_numeric(df[[cn]]))
     names(tmp) <- cols
+    
     keep <- vapply(tmp, is_good_numeric, logical(1))
     if (!any(keep)) return(NULL)
     
     nd <- as.data.frame(tmp[keep], check.names = FALSE)
+    
     inv <- input$invert_questions
     if (!is.null(inv) && length(inv) > 0) {
-      for (q in intersect(names(nd), inv)) if (is_scale_1_5(nd[[q]])) nd[[q]] <- invert_1_5(nd[[q]])
+      for (q in intersect(names(nd), inv)) {
+        if (is_scale_1_5(nd[[q]])) {
+          nd[[q]] <- invert_1_5(nd[[q]])
+        }
+      }
     }
+    
     nd
   })
   
